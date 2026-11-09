@@ -1,65 +1,141 @@
 # -*- coding: utf-8 -*-
-"""版式：1080x1920 竖屏，圆形头像画中画 + 动画主画面。
+"""版式：按 (方向, 画中画模式) 取一整套坐标。唯一真源。
 
-所有坐标都是「成片像素」，唯一真源。渲染、合成、验收全部引这里，改一处全对。
+所有坐标都是「成片像素」。渲染、合成、验收全部引这里，改一处全对。
 
-圆形头像（用户最终确认的参数，参照参考图）：
-    直径 280，圆心 (840, 1555)
-    -> 包围盒 [700, 1415, 980, 1695]
-    -> 右边距 100，下边距 225（贴住抖音底部信息条上沿，不能再低）
-    白边 2px，蒙版羽化 10，阴影向下偏移
-    头部在源画幅里是实测的（6 帧几乎不动）：
-        头顶 29% / 下巴 49% / 左 33% / 右 61%
-        -> 头中心 (507, 749)，取 (507, 748)
-        裁剪框 440 -> 头高 384 占 87%，留一点呼吸又不空
+## 四种模式
 
-字幕带（用户后期烧，我们一层都不能进）：
-    底部居中，基线距底 460-620  ->  成片 y 1300-1460
+    portrait / corner   竖屏 9:16 + 右下角圆头像        默认，口播-01 用这个（已验证）
+    portrait / cut      竖屏 9:16 + 人与动画互切        几何已定，状态机待实现
+    landscape / corner  横屏 16:9 + 右下角卡片          等模板
+    landscape / cut     横屏 16:9 + 人与动画互切        等模板
 
-内容栅格：
-    CONTENT  936×890  x 72-1008, y 400-1290
-    圆右侧只在 y 1200-1420 / x 720-940 这一小块禁区
+切换：环境变量 `LAYOUT_PROFILE="portrait/cut"`，或 `layout.activate("portrait/cut")`。
+
+> 默认值必须和重构前逐像素一致。改这里之前先跑基线帧比对。
+
+## 竖屏 / 右下角（默认，已验证）
+
+    圆头像 直径 280，圆心 (840,1555) -> 包围盒 [700,1415,980,1695]
+    右边距 100，下边距 345；白边 2px，羽化 10，阴影 (0,10) 模糊 22
+    头部实测（6 帧几乎不动）：头顶 29% / 下巴 49% / 左 33% / 右 61%
+    裁剪框 520 @ (570,838) —— 覆盖全片最大偏移，换人必须重标
+
+## 内容栅格
+
+    CONTENT  936×890   x 72-1008, y 400-1290
+    字幕带   y 1300-1460（用户后期烧，一个像素都不许进）
 """
 from __future__ import annotations
 
-W, H = 1080, 1920
+import os
 
-# 平台安全区（抖音按钮、底部信息条）
-SAFE = dict(top=140, right=72, bottom=460, left=60)
+# ============================================================ 模式表
 
-# ---------------- 人物画中画：圆形头像
-PIP_CX, PIP_CY, PIP_R = 840, 1555, 140
-PIP = (PIP_CX - PIP_R, PIP_CY - PIP_R, PIP_CX + PIP_R, PIP_CY + PIP_R)   # 700,1415,980,1695
-PIP_W = PIP[2] - PIP[0]          # 220
-PIP_H = PIP[3] - PIP[1]          # 220
-PIP_RADIUS = PIP_R               # 半径=圆角，画出来就是正圆
-PIP_BORDER = 2                   # 白色描边
-PIP_FEATHER = 10                 # 蒙版羽化（像素）
-PIP_SHADOW = 22                  # 阴影模糊半径
-PIP_SHADOW_OFFSET = (0, 10)      # 阴影向下偏移
-PIP_SHADOW_ALPHA = 120
+PROFILES: dict[str, dict] = {
+    # ---------------- 竖屏 + 右下角圆头像（已验证）
+    "portrait/corner": dict(
+        status="ready",
+        mode="corner",
+        size=(1080, 1920),
+        safe=dict(top=140, right=72, bottom=460, left=60),
+        content=(72, 400, 1008, 1290),
+        subtitle_band=(1300, 1460),
+        pip=dict(cx=840, cy=1555, r=140, border=2, feather=10.0,
+                 shadow=22, shadow_offset=(0, 10), shadow_alpha=120),
+        head=dict(box=520, cx=570, cy=838),
+        enter=0.70, exit=0.55, pop=0.40,
+    ),
 
-# 从人物帧里裁出来的正方形边长（源画幅坐标）
-HEAD_BOX = 520
-HEAD_CX, HEAD_CY = 570, 838
+    # ---------------- 竖屏 + 人与动画互切（几何已定，状态机待实现）
+    # 没有圆头像，动画出镜时能用满 y 220-1290（比 corner 高 300px）
+    "portrait/cut": dict(
+        status="geometry-ready",
+        mode="cut",
+        size=(1080, 1920),
+        safe=dict(top=140, right=72, bottom=460, left=60),
+        content=(72, 220, 1008, 1290),
+        subtitle_band=(1300, 1460),
+        pip=None,
+        head=dict(box=520, cx=570, cy=838),   # 互切时人物全屏，此值仅备用
+        enter=0.0, exit=0.0, pop=0.0,
+    ),
 
-# ---------------- 动画可用区
-CONTENT_TOP = 200                # 顶部标题带下沿
-CONTENT_BOTTOM = 1290            # 字幕带上沿
-CONTENT_LEFT = 60
-CONTENT_RIGHT = 1020
+    # ---------------- 横屏 16:9（等用户给模板，参数留空）
+    "landscape/corner": dict(
+        status="todo", mode="corner", size=(1920, 1080),
+        safe=None, content=None, subtitle_band=None,
+        pip=None, head=None, enter=0.0, exit=0.0, pop=0.0,
+    ),
+    "landscape/cut": dict(
+        status="todo", mode="cut", size=(1920, 1080),
+        safe=None, content=None, subtitle_band=None,
+        pip=None, head=None, enter=0.0, exit=0.0, pop=0.0,
+    ),
+}
 
-CONTENT = (72, 400, 1008, 1290)          # 主内容区：936×890
+DEFAULT_PROFILE = "portrait/corner"
+ACTIVE_PROFILE = DEFAULT_PROFILE
+MODE = "corner"
 
-# 字幕带（后期字幕所在，内容一律不得进入）
-SUBTITLE_BAND = (1300, 1460)
 
-# 段落状态：'full' 全屏 / 'pip' 缩角
-# 时间轴为成片时间（已扣掉 34.09s 的删除）
-PIP_ENTER = 0.70                 # 全屏->缩角 过渡时长
-PIP_EXIT = 0.55                  # 缩角->全屏 过渡时长
-PIP_POP = 0.40                   # 缩角落定后的缩放入场
+def available() -> list[str]:
+    return [k for k, v in PROFILES.items() if v["status"] != "todo"]
 
+
+def activate(name: str) -> None:
+    """切换模式并重算全部模块级常量。"""
+    global ACTIVE_PROFILE, MODE, W, H, SAFE, CONTENT, SUBTITLE_BAND
+    global CONTENT_TOP, CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT
+    global PIP_CX, PIP_CY, PIP_R, PIP, PIP_W, PIP_H, PIP_RADIUS
+    global PIP_BORDER, PIP_FEATHER, PIP_SHADOW, PIP_SHADOW_OFFSET, PIP_SHADOW_ALPHA
+    global HEAD_BOX, HEAD_CX, HEAD_CY, PIP_ENTER, PIP_EXIT, PIP_POP
+
+    key = name.replace(" ", "").replace("-", "/").lower()
+    if key not in PROFILES:
+        raise KeyError(f"未知版式 {name!r}；可选：{', '.join(PROFILES)}")
+    p = PROFILES[key]
+    if p["status"] == "todo":
+        raise NotImplementedError(
+            f"版式 {key} 参数还没定（等横屏模板）。当前可用：{', '.join(available())}")
+
+    ACTIVE_PROFILE = key
+    MODE = p["mode"]
+    W, H = p["size"]
+    SAFE = p["safe"]
+    CONTENT = p["content"]
+    SUBTITLE_BAND = p["subtitle_band"]
+    CONTENT_LEFT, CONTENT_TOP, CONTENT_RIGHT, CONTENT_BOTTOM = CONTENT
+
+    if p["pip"]:
+        d = p["pip"]
+        PIP_CX, PIP_CY, PIP_R = d["cx"], d["cy"], d["r"]
+        PIP_BORDER = d["border"]
+        PIP_FEATHER = d["feather"]
+        PIP_SHADOW = d["shadow"]
+        PIP_SHADOW_OFFSET = d["shadow_offset"]
+        PIP_SHADOW_ALPHA = d["shadow_alpha"]
+    else:
+        PIP_CX = PIP_CY = PIP_R = 0
+        PIP_BORDER = 0
+        PIP_FEATHER = 0.0
+        PIP_SHADOW = 0
+        PIP_SHADOW_OFFSET = (0, 0)
+        PIP_SHADOW_ALPHA = 0
+
+    PIP = (PIP_CX - PIP_R, PIP_CY - PIP_R, PIP_CX + PIP_R, PIP_CY + PIP_R)
+    PIP_W = PIP_H = 2 * PIP_R
+    PIP_RADIUS = PIP_R
+
+    h = p["head"]
+    HEAD_BOX, HEAD_CX, HEAD_CY = (h["box"], h["cx"], h["cy"]) if h else (0, 0, 0)
+
+    PIP_ENTER, PIP_EXIT, PIP_POP = p["enter"], p["exit"], p["pop"]
+
+
+# ============================================================ 时间轴（本片专用）
+
+# 段落状态：'full' 全屏 / 'pip' 缩角（cut 模式下语义不同，见 references/modes.md）
 SCHEDULE = [
     (0.00, 13.35, "full"),       # 钩子1：807 亿
     (13.35, 25.90, "pip"),       # 钩子2：估值 2万亿→1.5万亿
@@ -73,7 +149,6 @@ SCHEDULE = [
 ]
 
 # 场景槽位：(编号, 文件名主干, 起, 止, DURATION)
-# 起止是成片时间；场景内部时间 = t - 起
 SCENE_SLOTS = [
     ("S01", "s01_valuation_haircut", 13.35, 25.90, 12.55),
     ("S02", "s02_cutaway", 29.85, 38.70, 8.85),
@@ -93,9 +168,10 @@ SCENE_SLOTS = [
     ("S16", "s16_close", 213.35, 244.85, 31.50),
 ]
 
-# 动画场景时间槽（成片时间），每个场景只在自己的槽里渲染
 BEATS = []  # 由 build_timeline.py 填充
 
+
+# ============================================================ 状态与几何
 
 def state_at(t: float) -> tuple[str, float]:
     """返回 (状态, 该状态内的归一化进度)。过渡期返回渐变进度 0..1。"""
@@ -138,9 +214,8 @@ def pip_crop(progress: float) -> tuple[float, float, float, float]:
 
 
 def pip_radius(progress: float) -> int:
-    """0 = 直角（全屏），1 = 正圆。中间是圆角矩形，过渡就是"圆慢慢长出来"。"""
-    e = _ease(progress)
-    return int(round(PIP_R * e))
+    """0 = 直角（全屏），1 = 正圆。中间是圆角矩形，"圆慢慢长出来"。"""
+    return int(round(PIP_R * _ease(progress)))
 
 
 def pip_feather(progress: float) -> float:
@@ -150,6 +225,10 @@ def pip_feather(progress: float) -> float:
 
 def pip_params(progress: float):
     """一次拿齐 (裁切矩形, 落位矩形, 圆角, 羽化)。progress=1 就是圆头像。"""
+    if MODE != "corner":
+        raise NotImplementedError(
+            f"当前模式 {ACTIVE_PROFILE} 不是画中画模式，没有 pip_params；"
+            "互切模式请用 cut_params()（待实现）")
     return pip_crop(progress), pip_rect(progress), pip_radius(progress), pip_feather(progress)
 
 
@@ -161,4 +240,11 @@ def rect_hits_content(rect, pad=8) -> bool:
 
 def circle_hits(px: float, py: float, pad: float = 6) -> bool:
     """某个内容像素是否落进头像圆（含 pad）。验收用。"""
+    if PIP_R <= 0:
+        return False
     return (px - PIP_CX) ** 2 + (py - PIP_CY) ** 2 <= (PIP_R + pad) ** 2
+
+
+# ============================================================ 启动时激活
+
+activate(os.environ.get("LAYOUT_PROFILE", DEFAULT_PROFILE))

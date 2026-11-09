@@ -52,9 +52,14 @@ def main() -> int:
     args = ap.parse_args()
 
     bg = bg_frame()
-    # 画中画 = 圆（含外扩余量），不是矩形
+    # 画中画 = 圆（含外扩余量），不是矩形。
+    # 互切模式没有圆头像，这一项直接跳过（但仍然检查字幕带和安全区）。
     yy, xx = np.mgrid[0:L.H, 0:L.W]
-    pip = ((xx - L.PIP_CX) ** 2 + (yy - L.PIP_CY) ** 2) <= (L.PIP_R + args.margin) ** 2
+    if L.MODE == "corner" and L.PIP_R > 0:
+        pip = ((xx - L.PIP_CX) ** 2 + (yy - L.PIP_CY) ** 2) <= (L.PIP_R + args.margin) ** 2
+    else:
+        pip = np.zeros((L.H, L.W), dtype=bool)
+        print(f"[注] 当前模式 {L.ACTIVE_PROFILE} 没有画中画，跳过圆侵入检查")
 
     # 安全区外
     s = L.SAFE

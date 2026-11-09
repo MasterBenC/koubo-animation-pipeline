@@ -105,7 +105,22 @@ scale=1080:1920:flags=lanczos,unsharp=5:5:0.5:5:5:0
 强锐化会让人脸变脏。先出 A/B/C 三档对比给用户选。
 
 ### 阶段 4 · 定版式（决定后面所有事）
-改 `03-动画/layout.py`：
+
+**先定模式**——四种，按素材选，选错等于重做：
+
+| | 右下角画中画 | 人与动画互切 |
+|---|---|---|
+| 竖屏 9:16 | `portrait/corner` ✅ | `portrait/cut`（几何已定） |
+| 横屏 16:9 | `landscape/corner` 待模板 | `landscape/cut` 待模板 |
+
+判据（顺序问，任意一个指向互切就用互切）：
+手在画面里比划 → 互切；背景乱 → 互切；图表数据占大头 → 互切；
+胸像 + 背景干净 + 金句型 + 竖屏信息流 → 右下角。
+完整判据和拍摄自检见 `references/modes.md`。
+
+切模式：`set LAYOUT_PROFILE=portrait/cut` 或 `layout.activate(...)`。
+
+改 `03-动画/layout.py` 里**对应模式的那一块**：
 
 | 区域 | 默认值 | 说明 |
 |---|---|---|
@@ -181,7 +196,8 @@ python audit_timing.py                     # ⑤节拍 vs 台词
 |---|---|
 | `references/pipeline.md` | 要完整命令、参数、目录约定时 |
 | `references/layout-rules.md` | 定版式、写场景、调节拍时（填充原则、节拍纪律） |
-| `references/pitfalls.md` | **开工前读一遍**。15 条真实踩过的坑，能省一整天 |
+| `references/modes.md` | **定模式时读**。四种版式的选型判据、拍摄自检、各模式参数 |
+| `references/pitfalls.md` | **开工前读一遍**。20 条真实踩过的坑，能省一整天 |
 
 ---
 

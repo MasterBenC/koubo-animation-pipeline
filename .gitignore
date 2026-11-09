@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.preview/
+preview/
+frames/
+*.mp4
+*.wav
+*.png
+!assets/**/*.png

@@ -1,0 +1,43 @@
+display-name-zh: 口播动画片生产线
+display-name-en: Talking-Head Animation Pipeline
+version: 0.1.0
+tag-cn: 视频制作
+tag-en: Video
+complete-tags-cn:
+- 视频 / 剪辑
+- 视频 / 后期制作
+- 视频 / 动效包装
+complete-tags-en:
+- Video / Editing
+- Video / Post-production
+- Video / Motion Graphics
+summary-cn: 把一条真人出镜的口播视频，做成「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的 9:16 竖屏成片，含剪辑、版式、逐场动画、合成、响度和五道自动验收。
+summary-en: Turn a talking-head video into a 9:16 explainer with a circular face-cam PiP and full-width animated scenes, including cutting, layout, per-scene animation, compositing, loudness, and five automated QA passes.
+desc-cn: >-
+  面向做财经、商业、知识类竖屏口播的创作者。用户提供一条真人出镜的口播视频，
+  确认成片时长、动画强度和人物画中画的形式后，Skill 依次完成：语音转写拿到每句话的
+  精确时间、基于静音检测定剪点并复转比对相似度、画面超分、确定版式（内容区/字幕带/
+  圆头像/头部裁切）、把台词表拆成若干动画场景并逐场实现、批量渲染、与人物层合成、
+  响度归一到 -14 LUFS，最后跑五道自动验收（越界与压圆、文字重叠、文字进字幕带、
+  画布利用率、动画节拍与台词对齐）。输出带圆头像画中画的 1080×1920 成片和对齐好的
+  SRT 字幕文件。字幕不烧进画面——用户后期在剪映里手工烧，位置和断句更准。
+  适用于口播配动画、知识讲解片、财经拆解、产品解说；不适用于无人出镜的纯剪辑、
+  横屏长视频、或只需要一段动效素材的场景。
+desc-en: >-
+  For creators making vertical finance, business, and knowledge talking-head videos.
+  The user provides a talking-head recording and confirms target duration, animation
+  intensity, and the face-cam treatment. The Skill then runs the full line: speech
+  transcription with per-sentence timing, cut decisions from silence detection with a
+  re-transcription similarity check, upscaling, layout definition (content box,
+  subtitle band, circular face-cam, head crop), splitting the transcript into animated
+  scenes implemented one by one, batch rendering, compositing with the speaker layer,
+  loudness normalization to -14 LUFS, and five automated QA passes (overflow and
+  face-cam collision, text overlap, text entering the subtitle band, canvas usage,
+  and beat-to-dialogue alignment). It outputs a 1080x1920 film with a circular face-cam
+  PiP plus an aligned SRT. Subtitles are never burned in: the user burns them manually
+  in their editor for accurate line breaks and placement. Best for explainers, finance
+  breakdowns, and product narration; not for pure editing of footage without a speaker,
+  landscape long-form, or single motion-graphic assets.
+author-cn: 拆解师Ben
+author-en: Ben
+source: community

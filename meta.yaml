@@ -1,6 +1,6 @@
 display-name-zh: 口播动画片生产线
 display-name-en: Talking-Head Animation Pipeline
-version: 0.2.0
+version: 0.3.0
 tag-cn: 视频制作
 tag-en: Video
 complete-tags-cn:
@@ -11,7 +11,7 @@ complete-tags-en:
 - Video / Editing
 - Video / Post-production
 - Video / Motion Graphics
-summary-cn: 把一条真人出镜的口播视频，做成「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的 9:16 竖屏成片，含剪辑、版式、逐场动画、合成、响度和五道自动验收。
+summary-cn: 把一条真人出镜的口播视频，做成「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的 9:16 竖屏成片，含剪辑、版式、逐场动画、合成、响度和六道自动验收；附「只做标题层」的画面文字规范（两轮真实返工定稿）。
 summary-en: Turn a talking-head video into a 9:16 explainer with a circular face-cam PiP and full-width animated scenes, including cutting, layout, per-scene animation, compositing, loudness, and five automated QA passes.
 desc-cn: >-
   面向做财经、商业、知识类竖屏口播的创作者。用户提供一条真人出镜的口播视频，

@@ -157,14 +157,14 @@
 ## 验收接线（EP.05 新增，全是「脚本没坏、接线错了」）
 
 35. **`check_layout.py` 只认模块级 `bg_frame(t)`** ★。
-    场景里把 `c = S.bg(...)` 写在 `frame()` 内部，验收脚本拿不到「同一帧的纯背景」，
+    场景里把背景在 `frame()` 内部现拼（不放 `bg_frame`），验收脚本拿不到「同一帧的纯背景」，
     只能退回通用渐变底 → 照片底/双色底整帧都是差异 → 19 场能全假失败一遍
     （每场几十万像素"越界"、字幕带 13–17 万像素）。
     正确写法：
 
     ```python
     def bg_frame(t):
-        return S.bg("photo", t, DURATION, key="ph_capitol", blur=26, dim=0.86)
+        return K.canvas(t)          # 照片底/双色底在这里 paste + K.dim 自己拼
 
     def frame(t):
         c = bg_frame(t)

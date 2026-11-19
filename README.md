@@ -6,7 +6,8 @@
 
 适用于 **DeepSeek Harness** / Claude Code / Codex 等支持 `~/.agents/skills` 约定的 Agent。
 
-- **平台：Windows Only**（字体走系统字体目录；ffmpeg / Python 3.10+ / pillow / numpy）
+- **平台：Windows Only（实测基准）**——脚本是纯 Python + ffmpeg，**不依赖 PowerShell**；
+  唯一 OS 特化的是字体默认目录（非 Windows 设 `KOUBO_FONT_DIR` 即可）
 - **画幅：仅竖屏 1080×1920**（横屏两组参数还是空的，选到会直接抛错）
 
 ---
@@ -113,8 +114,9 @@ Agent 会按 SKILL.md 的七个阶段走：
 
 ### 2. 节拍跟着台词走
 
-动画不是按秒均摊的。**新元素出现的时刻 = 对应台词起点 − 0.15 秒**（代码里就是
-`ts = L.lead(t)`，画面**提前** 0.12 s），任何超过 1.2 秒的画面静止都算缺陷。
+动画不是按秒均摊的。**新元素出现的时刻 = 对应台词起点 − 0.12 秒**（代码里就是
+`ts = L.lead(t)`，即 `t + L.SYNC_LEAD`，画面**提前**），任何超过 1.2 秒的画面静止都算缺陷。
+手工微调可以在这个值上下浮动，但方向只有一个：**宁早勿晚**。
 
 实测教训：有一场戏在讲最狠的一句话时，画面静止了 6 秒。
 这类问题肉眼看不出来，必须用 `audit_timing.py` 量。
@@ -148,6 +150,7 @@ koubo-animation-pipeline/
 ├── SKILL.md                  触发词 + 八条铁律 + 标题层规范 + 七个阶段 + 六道验收
 ├── meta.yaml                 技能市场元数据（中英双语，含平台/画幅边界）
 ├── install.py                一条命令装工具链 + 建新片子
+├── smoke_test.py             全链路冒烟（临时工作区里跑一遍，不碰真实项目）
 ├── references/
 │   ├── cases-2026-11.md      真实成片的案件回灌（用户改了什么、为什么）
 │   ├── pipeline.md           完整命令与参数
@@ -167,6 +170,17 @@ koubo-animation-pipeline/
 代码是真的能跑通的（已用 `install.py` 装到临时工作区跑过全链路冒烟：
 装工具链 → 写场景 → 六道验收 → 渲片段 → 剪片 → 出 cues/srt）。
 
+### 自己验一遍
+
+```bash
+python smoke_test.py            # 全绿打印 [OK] 全链路通过；任一环节失败则非零退出
+python smoke_test.py --keep     # 保留临时工作区，出问题能进去看现场
+```
+
+它在一个临时目录里从零装一遍工具链、写一场真场景、跑六道验收、渲片段、合成、响度归一、出 SRT，
+**不碰你的真实项目**。前提：`ffmpeg` / `ffprobe` 在 PATH 里，`pillow` + `numpy` 已装，
+字体能被找到（Windows 默认取系统字体目录，非 Windows 先设 `KOUBO_FONT_DIR`）。
+
 ### 附带的片尾组件
 
 `outro_terminal.py` —— 「终端报错欺诈流」片尾：1.5 秒动画 + 0.5 秒首帧定格。
@@ -180,7 +194,8 @@ python 管线/组件/outro_terminal.py --attach 02-剪辑/05-成片.mp4 --out 06
 
 ## 环境要求
 
-- **Windows**（字体走 `%WINDIR%\Fonts`，用 Consolas / 微软雅黑 / Bahnschrift）
+- **Windows Only（实测基准）**：脚本是纯 Python + ffmpeg，不依赖 PowerShell；字体走
+  `%WINDIR%\Fonts`（Consolas / 微软雅黑 / Bahnschrift）
 - Python 3.10+，`pillow` `numpy`；转写要 `faster-whisper`
 - ffmpeg 6+（PATH 里能直接调，需要 `ffprobe`）
 

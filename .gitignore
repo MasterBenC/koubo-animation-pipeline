@@ -7,3 +7,11 @@ frames/
 *.wav
 *.png
 !assets/**/*.png
+
+# 本地评审 / 整改过程文档（含本机路径与会话痕迹，一律不进仓库）
+/整改对照.md
+/修改意见*.md
+/*评审意见*.md
+/review_*.md
+/评审_*.md
+/.review/

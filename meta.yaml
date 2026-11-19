@@ -23,7 +23,8 @@ desc-cn: >-
   自动验收（越界与压圆、文字重叠、文字进字幕带、画布利用率、动画节拍与台词对齐、
   文字整体出界）。输出带圆头像画中画的 1080×1920 成片和对齐好的 SRT 字幕文件。
   字幕不烧进画面——用户后期在剪映里手工烧，位置和断句更准。
-  平台边界：仅 Windows（字体取系统字体目录，可用 KOUBO_FONT_DIR 覆盖）；仅竖屏
+  平台边界：仅 Windows（脚本是纯 Python + ffmpeg，不依赖 PowerShell；字体取系统字体目录，
+  可用 KOUBO_FONT_DIR 覆盖）；仅竖屏
   1080×1920 口播片；横屏模板未定。不适用于无人出镜的纯剪辑、多人对话、
   或只需要一段动效素材的场景。
 desc-en: >-
@@ -39,7 +40,8 @@ desc-en: >-
   beat-to-dialogue alignment, and overall text bounds). It outputs a 1080x1920 film with
   a circular face-cam PiP plus an aligned SRT. Subtitles are never burned in: the user
   burns them manually in their editor for accurate line breaks and placement.
-  Scope: Windows only (system font directory; override with KOUBO_FONT_DIR), vertical
+  Scope: Windows only (tested baseline; pure Python + ffmpeg, no PowerShell dependency;
+  system font directory, override with KOUBO_FONT_DIR), vertical
   1080x1920 talking-head films only (landscape templates are not defined yet). Not for
   pure editing of footage without a speaker, multi-person dialogue, or single
   motion-graphic assets.

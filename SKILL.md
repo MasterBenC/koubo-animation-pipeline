@@ -2,11 +2,11 @@
 name: koubo-animation-pipeline
 description: |
   口播视频配动画的完整生产线。给一条真人出镜的口播视频，做出「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的 1080×1920 竖屏成片，含剪辑、动画、合成、响度、六道自动验收。
-  平台：Windows Only（字体走系统字体目录、脚本用 ffmpeg/PowerShell 惯例）。
+  平台：Windows Only（实测基准）。脚本是纯 Python + ffmpeg，**不依赖 PowerShell**；Windows 特化的只有字体默认目录，非 Windows 设 KOUBO_FONT_DIR 指向同名字体目录即可。
   触发：给口播配动画 / 口播剪辑 / 口播视频做成片 / 竖屏知识视频 / 9:16 讲解片 / 口播加图表 / 财经口播 / 「这条口播帮我做成片」「给视频配动画」「口播太单调了」。
   也适用于：一条口播要拆成多个动画场景、要统一的版式规范、要有自动验收不靠肉眼。
   不适用：横屏长视频、无人出镜的纯剪辑、多人对话、只做一段动效素材。
-  English: Turn a talking-head video into a 9:16 (1080x1920) explainer with a circular face-cam PiP and full-width animated scenes — cutting, layout, per-scene animation, compositing, loudness, and six automated QA passes. Windows only.
+  English: Turn a talking-head video into a 9:16 (1080x1920) explainer with a circular face-cam PiP and full-width animated scenes — cutting, layout, per-scene animation, compositing, loudness, and six automated QA passes. Windows only (tested baseline): pure Python + ffmpeg, no PowerShell dependency; the only OS-specific bit is the default font directory — set KOUBO_FONT_DIR on other systems.
   Trigger: talking-head to animation, explainer video, 9:16 knowledge video, add motion graphics to a talking head, voiceover video editing.
 ---
 
@@ -14,10 +14,12 @@ description: |
 
 把一条真人出镜的口播视频，做成「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的竖屏成片。
 
-> **平台：Windows Only。** 版式、字体、脚本默认值都是按 Windows + 1080×1920 竖屏标定的。
-> 脚本硬依赖 `ffmpeg` / `ffprobe` / Python 3.10+ / `pillow` / `numpy`；字体从
-> `%WINDIR%\Fonts`（微软雅黑 / Bahnschrift / Consolas）取，非 Windows 需设
-> `KOUBO_FONT_DIR` 指向一个放了同名字体的目录。
+> **平台：Windows Only（实测基准）。** 版式与默认参数是按 Windows + 1080×1920 竖屏标定的。
+> 依赖只有 `ffmpeg` / `ffprobe` / Python 3.10+ / `pillow` / `numpy`，脚本是纯 Python 调 ffmpeg，
+> **不依赖 PowerShell**（文档里 `set X=Y` 这类写法只是 Windows 用户习惯，换 `export X=Y` 同效）。
+> Windows 特化的只有字体默认目录 `%WINDIR%\Fonts`（微软雅黑 / Bahnschrift / Consolas）；
+> 非 Windows 设 `KOUBO_FONT_DIR`（或 `KOUBO_FONT_DIRS`，`;` 分隔）指向放了同名字体的目录即可，
+> 代码还会自动找 `~/.local/share/fonts`。整片流程未在非 Windows 上实测，按「未验证」对待。
 
 这套流程已经在三条成片上跑通过（264 s / 326.1 s / 336.6 s，16–21 个动画场景，−14 LUFS）：
 第一条定版式，后两条是案例回灌——**用户真实改过什么、我们因此改了什么，全写在
@@ -78,14 +80,14 @@ python -c "import layout as L; print(L.PIP, L.CONTENT, L.TITLE_BAND)"
 （模式参数改 `PROFILES` 里对应那一块）。
 
 ### 3. 节拍跟着台词走，不按秒均摊
-新元素出现的时刻 = 对应台词起点 **− 0.00~0.15 秒**（视觉略领先，读起来最舒服）。
-**绝不晚于台词。** 任何超过 1.2 秒的画面静止都是缺陷。
+新元素出现的时刻 = 对应台词起点 **− 0.12 秒**（视觉略领先，读起来最舒服）。全库只有这一个数，
+不要再写成 `0.00~0.15` 的区间。**绝不晚于台词。** 任何超过 1.2 秒的画面静止都是缺陷。
 
 代码口径只有一种写法（别搞反）：
 
 ```python
 def bg_frame(t):                 # ★ 背景必须提成模块级函数，验收脚本靠它做差
-    return S.bg("photo", t, DURATION, key="ph_capitol", blur=26, dim=0.86)
+    return K.canvas(t)           # 照片底/双色底就在这一行里自己拼（paste + K.dim）
 
 
 def frame(t):
@@ -96,7 +98,7 @@ def frame(t):
 `t -= 0.12` 是让画面**延后**，方向正好反了；旧版本文档写成那样是错的。
 
 **`bg_frame(t)` 不是可选项。** `check_layout.py` 拿「只有背景的同一帧」做差来判断内容越界；
-场景里若把 `c = S.bg(...)` 写在 `frame()` 内部，它只能退回通用底，照片底/双色底会整帧都是差异，
+场景里若把背景在 `frame()` 内部现拼（不放 `bg_frame`），它只能退回通用底，照片底/双色底会整帧都是差异，
 一场就能假报几十万像素越界（EP.05 19 场全假失败一遍才发现）。缺 `bg_frame` 时脚本现在会打印
 `[!] 本场缺模块级 def bg_frame(t)`，照着提示把那行提出来即可。
 
@@ -242,14 +244,12 @@ L.activate("portrait/cut")               # 代码里切
 | 场次表 | `SCHEDULE` / `SCENE_SLOTS` | **单集数据**，装新片时整块替换 |
 
 **换人换片子必须重新标定头部裁切框**，而且别信默认值：EP.03 的机位实测是
-`box=980 @ (590,932)`——比默认的 520×520 大了一倍，照默认裁会把肩膀切掉。
-别信单帧测量——人说话会左右挪 100+ 像素。
-做法：抽 6–8 帧 → 缩到 540×960 叠 120px 网格 → 拼联系表 → 肉眼读头的范围 →
-取能装下所有时刻的最小框 → 再放大 4%。
+`box=980 @ (590,932)`，比默认 520×520 大了一倍，照默认裁会把肩膀切掉；也别信单帧测量
+（人说话会左右挪 100+ 像素）。手动网格标定法见 `references/layout-rules.md`。
 
-**底的序列先排，再填内容。** 用户对第二、三条片子的要求是「跟上一集一样」——同一套大字体系，
-但**背景四种底轮换**（实拍 / 聚光黑底 / 双色章节 / 点阵航线），连续两场不许同一种。
-一条 5 分半的片子如果全场一个底，观众 90 秒就疲劳；这是"太单一"最省力的解法（比加字省力）。
+**底的序列先排，再填内容。** 同一套大字体系，但背景四种底轮换（实拍 / 聚光黑底 / 双色章节 /
+点阵航线），连续两场不许同一种——一条 5 分半的片子全场一个底，观众 90 秒就疲劳。
+EP.04 的排法见 `references/cases-2026-11.md`。
 
 改完出图给用户确认：
 ```bash
@@ -267,27 +267,27 @@ python 03-动画/make_check_png.py <成片帧.png> 构图验收.png
 # scenes/s07_55cents.py
 import layout as L
 import scene_kit as K
-import scene_lib as S
 from motion import C, stage
 
-DURATION = 14.5
+DURATION = 14.5                              # ① 这一场多长
 
 
-def bg_frame(t: float):          # ★ 必须：验收脚本用它渲「同一帧的纯背景」做差
-    return S.bg("spot", t, DURATION, color=(22, 30, 42))
+def bg_frame(t: float):                      # ② 纯背景（验收脚本拿它做差，不许省）
+    return K.canvas(t)
 
 
-def frame(t: float):
+def frame(t: float):                         # ③ 这一帧画什么
     c = bg_frame(t)
-    ts = L.lead(t)                  # 画面领先 0.12s，方向是 +
-    K.scene_head(c, "s07_55cents", ts)   # 标题层：落区由 L.TITLE_BAND 管
-    # 主视觉在 L.CONTENT（x 72–1008 / y 400–1290）内绘制，坐标一律从 L 推
-    left, top, right, bottom = L.CONTENT
+    ts = L.lead(t)                           #    == t + 0.12，方向是 +
+    K.scene_head(c, "s07_55cents", ts)       #    标题层落区由 L.TITLE_BAND 管
+    left, top, right, bottom = L.CONTENT     #    坐标一律从 L 推，别写死数字
     a = stage(ts, 0.8, 0.6)
     if a > 0:
         c.text(left, top + 60, "5 毛 5", "bahn", 120, C.amber, opacity=a)
     return c.finish()
 ```
+
+完整可跑范例与全部函数签名见 `references/api-reference.md`（§6 最小可跑场景）。
 
 常用公共件（全部签名见 `references/api-reference.md`）：
 
@@ -296,18 +296,10 @@ def frame(t: float):
 | `scene_kit.py` | `canvas / scene_head / chapter / headline / label / number / rule / bar / vbar / arrow / pill / card / cross / check / strike / shake / dim / scrim_top` + 文案表 `TEXT` |
 | `motion.py` | `Canvas`（`text / text_mixed / rect / rounded_rect / line / ellipse / polygon / glow / vignette / paste / _comp / finish`）、`stage / ease_* / spring / clamp / lerp / C`、`text_tracking()` |
 
-**先列台词表再挂元素**（铁律 5）。每写完一场立刻：
-
-```bash
-cd 03-动画
-python check_layout.py s07 --step 0.5      # ①越界/压圆/进字幕带
-python check_text.py s07 --fps 10          # ②文字重叠
-python audit_band.py s07                   # ③文字进字幕带
-python audit_canvas.py s07                 # ④宽度/下沿
-python audit_text_band.py s07              # ⑥文字整体出界
-```
-
-⑤ 留到整条时间轴齐了再跑（它要把 `cues.json` 和场次表对起来）。
+**先列台词表再挂元素**（铁律 5）。每写完一场立刻跑单场版验收（命令同阶段 7，多传一个场景号）：
+`check_layout.py s07 --step 0.5` → `check_text.py s07 --fps 10` → `audit_band.py s07` →
+`audit_canvas.py` → `audit_text_band.py s07`。⑤ `audit_timing` 留到整条时间轴齐了再跑
+（它要把 `cues.json` 和场次表对起来）。
 
 ### 阶段 6 · 渲染 + 合成
 
@@ -323,31 +315,16 @@ ffmpeg -hide_banner -y -i "../02-剪辑/04-合成.mp4" \
 ```
 
 **不要写死增益**（`volume=7.2dB` 只是某条 −19.2 LUFS 素材的差值，换素材会偏离甚至削波）。
-要么用上面那行 `loudnorm` 一把过，要么先量再补：
 
-```bash
-ffmpeg -hide_banner -i "../02-剪辑/04-合成.mp4" -af ebur128 -f null -   # 看 I / Peak
-```
+- 普通素材：上面那行 `loudnorm` 一把过；要更准时先 `-af ebur128 -f null -` 量出 I/Peak 再套两遍法
+  （`measured_*` 从第一遍 JSON 里抄）。
+- **源 TP > −3 dB 的高峰值素材 `loudnorm` 会翻车**（动态模式实测稳定欠 0.5–0.7 dB，−14.6 ~ −14.9），
+  改用增益 + 限幅：`-af "volume=6.75dB,alimiter=limit=0.80:attack=4:release=80:level=false"`。
+  `level=false` 不能省（默认 `true` 会把电平抬回去，实测顶到 +0.24 dBTP）；`limit=0.80`
+  （−1.94 dBFS 采样峰值）给 AAC 后的真峰值留余量（设 0.891 时成片 TPK 仍是 −0.83）。
+- 收尾一律复测：`-af "loudnorm=I=-14:TP=-1.0:print_format=json" -f null -`。
 
-要求更准时用两遍法（先测再套实测值，`measured_*` 从第一遍的 JSON 里抄）。
-
-**素材峰值高时（源 TP > −3 dB）上面两条都会翻车，用「增益 + 限幅」这一版**：
-
-```bash
-# 源素材 −18.8 LUFS / TP −3.0：线性 +4.8 dB 会把 TP 顶到 +1.8（削波），
-# 而 loudnorm 动态模式在这类口播上稳定欠 0.5–0.7 dB（实测 −14.6 ~ −14.9）
-ffmpeg -hide_banner -y -i "../02-剪辑/04-合成.mp4" \
-  -af "volume=6.75dB,alimiter=limit=0.80:attack=4:release=80:level=false" \
-  -c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart "../02-剪辑/05-成片.mp4"
-```
-
-`alimiter` 的 `level=false` 不能省——默认 `level=true` 会自己把输出电平抬回去，实测直接顶到 +0.24 dBTP。
-`limit=0.80`（−1.94 dBFS 采样峰值）是给 AAC 编码后的真峰值留余量：设 0.891 时成片 TPK 仍是 −0.83。
-收尾一律复测：
-
-```bash
-ffmpeg -hide_banner -i "05-成片.mp4" -af "loudnorm=I=-14:TP=-1.0:print_format=json" -f null -
-```
+实测数据与两遍法细节见 `references/pipeline.md` 阶段 6、`references/pitfalls.md` 39–42。
 
 ### 阶段 7 · 六道验收（一道都不能省）
 
@@ -433,9 +410,11 @@ python 管线/组件/outro_terminal.py --attach "02-剪辑/05-成片.mp4" --out 
 
 ## 已知失效项 / 平台限制
 
-- **仅 Windows**：字体取系统目录（`%WINDIR%\Fonts`）。非 Windows 要设 `KOUBO_FONT_DIR`
-  指向放了 `msyh.ttc` / `msyhbd.ttc` / `bahnschrift.ttf` / `consola*.ttf` 的目录。
-  缺字体会**明确报错**并列出找过的路径（不会静默出方块字）。
+- **Windows Only（实测基准）**：脚本是纯 Python + ffmpeg，不依赖 PowerShell；唯一 OS 特化的是
+  字体默认目录（`%WINDIR%\Fonts`）。非 Windows 要设 `KOUBO_FONT_DIR` / `KOUBO_FONT_DIRS`
+  指向放了 `msyh.ttc` / `msyhbd.ttc` / `bahnschrift.ttf` / `consola*.ttf` 的目录（代码也会找
+  `~/.local/share/fonts`）。缺字体会**明确报错**并列出找过的路径（不会静默出方块字）。
+  整片流程只在 Windows 上实测过。
 - **仅竖屏 1080×1920**：`portrait/corner` 是唯一 `status=ready` 的版式；
   `portrait/cut` 只有几何、没有状态机；横屏两组参数还是空的（`activate()` 会直接抛
   `NotImplementedError`，不会静默出错）。

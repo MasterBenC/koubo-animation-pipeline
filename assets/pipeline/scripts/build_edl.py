@@ -6,6 +6,12 @@
     segments.json   机器可读：keep[] / deletes[] / 映射后的成片时长
     timemap.json    源时间 <-> 成片时间 双向映射（字幕和动画都要用）
     segments.txt    cut.py --segments 的参数字符串
+
+用法:
+    python build_edl.py --cuts <项目>/02-剪辑/cuts.json --out <项目>/02-剪辑/
+    python build_edl.py <项目>/02-剪辑/cuts.json -o <项目>/02-剪辑/segments.json
+    （--out 给目录就写目录里的三个文件；给 xxx.json 就以它为 segments 路径，
+      timemap.json / segments.txt 写在同目录）
 """
 from __future__ import annotations
 
@@ -26,12 +32,16 @@ def merge(intervals):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--cuts", required=True)
-    ap.add_argument("--out", required=True)
+    ap.add_argument("cuts_pos", nargs="?", help="cuts.json（也可用 --cuts）")
+    ap.add_argument("--cuts", default=None)
+    ap.add_argument("-o", "--out", required=True, help="输出目录，或 xxx/segments.json")
     ap.add_argument("--min-keep", type=float, default=0.12)
     args = ap.parse_args()
 
-    cuts = json.loads(Path(args.cuts).read_text(encoding="utf-8"))
+    cuts_path = args.cuts or args.cuts_pos
+    if not cuts_path:
+        ap.error("给一个 cuts.json（位置参数或 --cuts）")
+    cuts = json.loads(Path(cuts_path).read_text(encoding="utf-8-sig"))
     dur = float(cuts["source_duration"])
     dels = merge([(d["start"], d["end"]) for d in cuts["deletes"]])
 
@@ -73,8 +83,11 @@ def main() -> int:
         "mapping": mapping,
     }
     out = Path(args.out)
-    out.mkdir(parents=True, exist_ok=True)
-    (out / "segments.json").write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    is_file = out.suffix.lower() == ".json"
+    out_dir = out.parent if is_file else out
+    seg_path = out if is_file else out / "segments.json"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    seg_path.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
 
     tm = {
         "source_duration": dur,
@@ -82,10 +95,10 @@ def main() -> int:
         "mapping": mapping,
         "removed": [[round(s, 3), round(e, 3)] for s, e in dels],
     }
-    (out / "timemap.json").write_text(json.dumps(tm, ensure_ascii=False, indent=1), encoding="utf-8")
+    (out_dir / "timemap.json").write_text(json.dumps(tm, ensure_ascii=False, indent=1), encoding="utf-8")
 
     seg_arg = ",".join(f"{s:.3f}-{e:.3f}" for s, e in keep)
-    (out / "segments.txt").write_text(seg_arg, encoding="utf-8")
+    (out_dir / "segments.txt").write_text(seg_arg, encoding="utf-8")
 
     # 抽查：几个关键时间点映射
     checks = [0.5, 5.0, 40.0, 116.9, 122.2, 141.9, 183.5, 192.4, 230.5, 254.7, 273.5, 287.6, 294.0]
@@ -94,7 +107,7 @@ def main() -> int:
     for t in checks:
         print(f"  源 {t:7.2f}s -> 成片 {src_to_out(t):7.2f}s")
     print(f"\n--segments ({len(seg_arg)} 字符):\n{seg_arg[:400]}{'...' if len(seg_arg) > 400 else ''}")
-    print(f"\nwrote {out/'segments.json'} / timemap.json / segments.txt")
+    print(f"\nwrote {seg_path} / {out_dir / 'timemap.json'} / {out_dir / 'segments.txt'}")
     return 0
 
 

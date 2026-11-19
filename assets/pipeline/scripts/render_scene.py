@@ -27,6 +27,11 @@ from PIL import Image
 
 
 def load_scene(path: Path):
+    """按文件加载场景模块；把场景所在目录放进 sys.path，
+    这样场景里的 `import layout as L` / `import scene_kit as K` 不依赖 PYTHONPATH。"""
+    for p in (str(path.parent), str(path.parent.parent)):
+        if p not in sys.path:
+            sys.path.insert(0, p)
     spec = importlib.util.spec_from_file_location(path.stem, str(path))
     mod = importlib.util.module_from_spec(spec)
     sys.modules[path.stem] = mod

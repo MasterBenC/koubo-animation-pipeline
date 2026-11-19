@@ -5,16 +5,19 @@
 不做烧录——用户后期自己统一烧字幕，这里只负责给一份时间准确的文本。
 
 做法：
-    1. 读 01-asr/words.json（逐字时间，源片时间轴）
+    1. 读 ASR 的 words.json（逐字时间，**源片时间轴**）
     2. 把 segment.text 里的标点"贴回"到对应词上（whisper 的 word 级时间戳不带标点）
     3. 用 02-剪辑/timemap.json 把每个字的起止映射到成片时间轴（被剪掉的句子自然掉出去）
     4. 按标点 / 换段 / 停顿切 cue
-    5. 套 ASR 纠错表
+    5. 套 ASR 纠错表（<项目>/01-asr/fixes.json，没有就不纠错）
     6. 写 SRT
 
-用法:
+用法（两种等价写法）:
     python make_srt.py --proj "…/口播-01" -o "…/final.srt"
-    python make_srt.py --proj "…/口播-01" --dump
+    python make_srt.py "…/口播-01/02-剪辑/asr_verify/words.json" -o "…/final.srt"
+
+    --proj 时自动找 words.json：先看 02-剪辑/asr_verify/words.json（复转比对的那份），
+    再看 01-asr/words.json（原片那份）。剪过片就必须用成片时间轴的那份。
 """
 from __future__ import annotations
 
@@ -22,34 +25,53 @@ import argparse
 import json
 from pathlib import Path
 
-# ASR 听错的词。按"越长越先替换"排序，避免短词先命中把长词拆坏。
-FIXES = {
-    "账目账言法": "障眼法",
-    "账言法": "障眼法",
-    "这份SE的": "这份S-1的",
-    "现在SE的": "现在S-1的",
-    "Zeropic": "Anthropic",
-    "编辑成本": "边际成本",
-    "进调": "尽调",
-    "表外付注": "表外附注",
-    "付注": "附注",
-    "与融资租赁成约": "与融资租赁承诺",
-    "Cloud": "Claude",
-    "试梦率": "市梦率",
-    "AI洋谋": "AI阳谋",
-    "洋谋": "阳谋",
-    "算力卖身器": "算力卖身契",
-    "卖身器": "卖身契",
-    "森罗万象拆解本质": "森罗万象，拆解本质",
-}
+# ASR 纠错表**不写死在代码里**：每个题材的专有名词都不一样，写死会静默篡改新片台词。
+# 从 <项目>/01-asr/fixes.json 读，格式 {"错词": "正词"}；没有这个文件就是不纠错。
+DEFAULT_FIXES_HINT = "01-asr/fixes.json"
+
+
+def load_fixes_file(path: Path) -> dict[str, str]:
+    """读一份纠错表；兼容 {"fixes": {...}} 和裸 {...} 两种写法。"""
+    data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict) and isinstance(data.get("fixes"), dict):
+        data = data["fixes"]
+    if not isinstance(data, dict):
+        raise ValueError(f'{path} 应该是 {{"错词": "正词"}} 形式的 json')
+    return {str(k): str(v) for k, v in data.items() if str(k)}
+
+
+def load_fixes(proj: Path) -> dict[str, str]:
+    """读 <项目>/01-asr/fixes.json；不存在就是空表（默认不纠错）。"""
+    p = Path(proj) / DEFAULT_FIXES_HINT
+    return load_fixes_file(p) if p.exists() else {}
+
 
 PUNCT = "，。？！、；：,.?!;:…—"
 TAIL_TRIM = "，。、；：,.;: "
 
 
-def load_segments(proj: Path):
-    d = json.loads((proj / "01-asr" / "words.json").read_text(encoding="utf-8"))
-    return d["segments"]
+def find_words(proj: Path) -> Path:
+    """剪过片就用复转的那份（asr_verify）；没剪过才回落到 01-asr。"""
+    for rel in (Path("02-剪辑") / "asr_verify" / "words.json",
+                Path("01-asr") / "words.json"):
+        p = proj / rel
+        if p.exists():
+            return p
+    raise FileNotFoundError(
+        f"{proj} 下找不到 words.json（找过 02-剪辑/asr_verify/ 与 01-asr/）")
+
+
+def load_segments(words_json: Path):
+    d = json.loads(Path(words_json).read_text(encoding="utf-8-sig"))
+    return d["segments"] if isinstance(d, dict) else d
+
+
+def find_project(start: Path) -> Path:
+    """从 words.json 往回找项目根（判据：有 01-asr 或 02-剪辑）。"""
+    for base in [start, *start.parents][:5]:
+        if (base / "01-asr").is_dir() or (base / "02-剪辑").is_dir():
+            return base
+    return start.parent
 
 
 def attach_punct(seg) -> list[dict]:
@@ -72,8 +94,8 @@ def attach_punct(seg) -> list[dict]:
     return out
 
 
-def load_mapper(proj: Path):
-    tm = json.loads((proj / "02-剪辑" / "timemap.json").read_text(encoding="utf-8"))
+def load_mapper(timemap: Path):
+    tm = json.loads(Path(timemap).read_text(encoding="utf-8-sig"))
     spans = [(m["src_start"], m["src_end"], m["out_start"]) for m in tm["mapping"]]
 
     def s2o(t: float):
@@ -166,17 +188,18 @@ def build_cues(words, max_chars=18, max_gap=0.42, max_dur=5.2):
     return merged
 
 
-def apply_fixes(text: str) -> str:
-    for k in sorted(FIXES, key=len, reverse=True):
-        text = text.replace(k, FIXES[k])
+def apply_fixes(text: str, fixes: dict[str, str] | None = None) -> str:
+    """按纠错表替换；按"越长越先替换"排序，避免短词先命中把长词拆坏。"""
+    for k in sorted(fixes or {}, key=len, reverse=True):
+        text = text.replace(k, fixes[k])
     return text
 
 
-def cue_text(cue) -> str:
+def cue_text(cue, fixes: dict[str, str] | None = None) -> str:
     raw = "".join(x["w"] + x["p"] for x in cue)
     for a, b in ((",", "，"), ("?", "？"), ("!", "！"), (":", "："), (";", "；")):
         raw = raw.replace(a, b)
-    raw = apply_fixes(raw).strip()
+    raw = apply_fixes(raw, fixes).strip()
     while raw and raw[-1] in TAIL_TRIM:
         raw = raw[:-1]
     return raw.strip()
@@ -195,16 +218,29 @@ def ts(t: float) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--proj", required=True)
+    ap.add_argument("words", nargs="?", help="words.json（不给就配合 --proj 自动找）")
+    ap.add_argument("--proj", default=None, help="项目根；与 words 二选一")
+    ap.add_argument("--timemap", default=None, help="默认 <项目>/02-剪辑/timemap.json")
     ap.add_argument("-o", "--out", default=None)
     ap.add_argument("--max-chars", type=int, default=18)
     ap.add_argument("--dump", action="store_true")
     ap.add_argument("--json", default=None, help="同时导出 cue 列表 json")
     args = ap.parse_args()
+    if not args.words and not args.proj:
+        ap.error("给一个 words.json，或者用 --proj 指定项目根")
 
-    proj = Path(args.proj).resolve()
-    s2o, out_dur = load_mapper(proj)
-    words = remap(load_segments(proj), s2o)
+    if args.words:
+        words_json = Path(args.words).resolve()
+        proj = Path(args.proj).resolve() if args.proj else find_project(words_json.parent)
+    else:
+        proj = Path(args.proj).resolve()
+        words_json = find_words(proj)
+    tm_path = Path(args.timemap) if args.timemap else proj / "02-剪辑" / "timemap.json"
+    if not tm_path.exists():
+        raise SystemExit(f"找不到 {tm_path}：先跑 build_edl.py / cut.py 生成 timemap.json")
+    fixes = load_fixes(proj)
+    s2o, out_dur = load_mapper(tm_path)
+    words = remap(load_segments(words_json), s2o)
     cues = build_cues(words, max_chars=args.max_chars)
 
     lines, rows, n = [], [], 0
@@ -213,7 +249,7 @@ def main() -> int:
     # 先整理成 (起, 止, 文本)，把"以标点开头"的残句并到上一句
     flat: list[dict] = []
     for cue in cues:
-        txt = cue_text(cue)
+        txt = cue_text(cue, fixes)
         if not txt:
             continue
         flat.append({"s": cue[0]["s"], "e": cue[-1]["e"], "t": txt})
@@ -244,6 +280,7 @@ def main() -> int:
             print(f"{r['i']:4d} {r['start']:7.2f}-{r['end']:7.2f}  {r['text']}")
     else:
         out = Path(args.out or (proj / "final.srt"))
+        # .srt 用 utf-8-sig：剪映/部分播放器对 BOM 更宽容；JSON 一律 utf-8 无 BOM
         out.write_text("\n".join(lines), encoding="utf-8-sig")
         print(f"[srt] {n} 条 -> {out}")
 

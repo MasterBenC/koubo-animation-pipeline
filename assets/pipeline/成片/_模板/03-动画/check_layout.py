@@ -1,41 +1,54 @@
 # -*- coding: utf-8 -*-
-"""版式体检：用像素证明"画中画没压到内容"，不靠肉眼也不靠视觉模型。
+"""版式体检：用像素证明「内容没压到圆头像、没进字幕带、没出安全区」，不靠肉眼。
 
-做法：逐帧渲染场景 -> 与"只有背景"的同一帧做差 -> 得到真正有内容的像素
--> 检查这些像素有没有落进画中画矩形 / 安全区外。
+做法：逐帧渲染场景 -> 与「只有背景」的同一帧做差 -> 得到真正有内容的像素
+-> 检查这些像素有没有落进圆头像（圆形距离掩码，不是矩形包围盒）/ 字幕带 / 安全区外。
 
 用法:
     python check_layout.py scenes/s01_valuation_haircut.py
-    python check_layout.py scenes/*.py --step 0.5
+    python check_layout.py s01 s07 --step 0.5
+    python check_layout.py s01 --save          # 把违规帧存进 preview/violations/
 """
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import sys
 from pathlib import Path
 
 import numpy as np
 from PIL import Image
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parents[1] / "scripts"))
+import _paths
 
-import layout as L
+_paths.ensure_import_path()
 
-
-def load(path: Path):
-    spec = importlib.util.spec_from_file_location(path.stem, str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+import layout as L  # noqa: E402
 
 
 def bg_frame():
     import scene_kit as K
-    c = K.canvas(0.0)
-    return np.asarray(c.finish().convert("RGB")).astype(np.int16)
+    return np.asarray(K.canvas(0.0).finish().convert("RGB")).astype(np.int16)
+
+
+def scene_bg(mod, t: float):
+    """场景自带 `bg_frame(t)` 时，用它渲「同一帧的纯背景」做差。
+
+    这是照片底 / 双色底 / 点阵底唯一正确的基准：通用底（`K.canvas`）和场景真实背景
+    差了整张图，直接拿通用底做差会把每一帧都判成「满屏内容」——19 场能全假失败一遍。
+    场景没写 `bg_frame` 就返回 None，退回通用底。
+    """
+    fn = getattr(mod, "bg_frame", None)
+    if fn is None:
+        return None
+    return np.asarray(fn(t).finish().convert("RGB")).astype(np.int16)
+
+
+def drop_scrim(mask: np.ndarray) -> np.ndarray:
+    """把顶部固定薄膜（K.scrim_box）从「内容」里排除——它是背景件，不是这一场画的。"""
+    import scene_kit as K
+    x0, y0, x1, y1 = K.scrim_box()
+    mask[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = False
+    return mask
 
 
 def diff_mask(img: Image.Image, bg: np.ndarray, thr: int = 10) -> np.ndarray:
@@ -45,15 +58,22 @@ def diff_mask(img: Image.Image, bg: np.ndarray, thr: int = 10) -> np.ndarray:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("scenes", nargs="+")
+    ap.add_argument("scenes", nargs="+", help="场景路径或 sNN（大小写不敏感）")
     ap.add_argument("--step", type=float, default=0.5)
-    ap.add_argument("--margin", type=int, default=6, help="画中画外扩余量")
+    ap.add_argument("--margin", type=int, default=6, help="圆头像外扩余量")
     ap.add_argument("--save", action="store_true", help="把违规帧存下来")
     args = ap.parse_args()
 
+    paths = []
+    for arg in args.scenes:
+        try:
+            paths.append(_paths.resolve_scene(arg))
+        except FileNotFoundError as exc:
+            print(f"[!] {exc}")
+            return 2
+
     bg = bg_frame()
-    # 画中画 = 圆（含外扩余量），不是矩形。
-    # 互切模式没有圆头像，这一项直接跳过（但仍然检查字幕带和安全区）。
+    # 圆头像 = 圆（含外扩余量），不是矩形。互切模式没有圆头像，这一项直接跳过。
     yy, xx = np.mgrid[0:L.H, 0:L.W]
     if L.MODE == "corner" and L.PIP_R > 0:
         pip = ((xx - L.PIP_CX) ** 2 + (yy - L.PIP_CY) ** 2) <= (L.PIP_R + args.margin) ** 2
@@ -66,27 +86,32 @@ def main() -> int:
     safe = np.zeros(bg.shape[:2], dtype=bool)
     safe[s["top"]:L.H - s["bottom"], s["left"]:L.W - s["right"]] = True
 
-    # 字幕带：用户后期烧，内容一层都不许进
+    # 字幕带：用户后期烧，动画一层都不许进（图形也算）
     band = np.zeros(bg.shape[:2], dtype=bool)
     b0, b1 = L.SUBTITLE_BAND
     band[b0:b1, :] = True
 
     bad_total = 0
-    for sp in args.scenes:
-        path = Path(sp)
-        mod = load(path)
-        dur = float(getattr(mod, "DURATION", 10.0))
+    for path in paths:
+        mod = _paths.load_scene(path)
+        dur = _paths.duration(mod)
         ts = [round(i * args.step, 2) for i in range(int(dur / args.step) + 1)]
         worst = 0.0
         worst_t = 0.0
         outside_px = 0
-        band_px = 0
         band_worst = 0
         band_t = 0.0
         pip_frames = []
+        no_bg = []
         for t in ts:
-            img = mod.frame(min(t, dur - 0.01))
-            m = diff_mask(img, bg)
+            tt = min(t, dur - 0.01)
+            img = mod.frame(tt)
+            ref = scene_bg(mod, tt)
+            if ref is None:
+                ref = bg
+            m = drop_scrim(diff_mask(img, ref))
+            if ref is bg and m.mean() > 0.25:
+                no_bg.append(t)
             in_pip = int((m & pip).sum())
             if in_pip > worst:
                 worst, worst_t = in_pip, t
@@ -95,10 +120,9 @@ def main() -> int:
             nb = int((m & band).sum())
             if nb > band_worst:
                 band_worst, band_t = nb, t
-            band_px += nb
             outside_px += int((m & ~safe).sum())
             if args.save and (in_pip or nb):
-                out = HERE / "preview" / "violations"
+                out = _paths.HERE / "preview" / "violations"
                 out.mkdir(parents=True, exist_ok=True)
                 img.convert("RGB").save(out / f"{path.stem}-t{t:.2f}-{in_pip}px.png")
 
@@ -112,6 +136,10 @@ def main() -> int:
         if pip_frames:
             head = ", ".join(f"t{t:.2f}:{n}px" for t, n in pip_frames[:6])
             print(f"       圆违规时段: {head}{' ...' if len(pip_frames) > 6 else ''}")
+        if no_bg:
+            print(f"       [!] 本场缺模块级 def bg_frame(t)（{len(no_bg)}/{len(ts)} 帧与通用底差 >25%），"
+                  f"圆/字幕带的数字可能全是背景差、不是内容越界；"
+                  f"把 frame() 里的背景调用提成 bg_frame(t) 再跑。")
     return 0 if bad_total == 0 else 1
 
 

@@ -1,55 +1,62 @@
 # -*- coding: utf-8 -*-
-"""圆头像尺寸/位置候选对比：真头裁切 + 真背景 + 字幕带/按钮区标注。
+"""圆头像「尺寸」三档对比：真头裁切 + 真背景 + 字幕带/按钮区标注。
 
-用法: python size_options.py
+用法:
+    python size_options.py --person <03-超分.mp4> --bg <成片.mp4> --out 预览/圆尺寸三档.png
+    python size_options.py --person p.mp4 --bg b.mp4 --sizes "220,260,280" --person-at 147.5
+
+`--person` 给人物母版（未压动画的超分片），`--bg` 给要贴上去的那一帧的来源。
 """
 from __future__ import annotations
 
+import argparse
 import subprocess
 import sys
 from pathlib import Path
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-import layout as L
-import compose_final as CF
+import _paths
 
-SAMPLE = Path(r"C:\Users\benhu\Desktop\档案001\预览\12-圆头像试样.mp4")
-SRC = HERE.parent / "02-剪辑" / "03-超分.mp4"
-OUT = Path(r"C:\Users\benhu\Desktop\档案001\预览\16-圆尺寸三档.png")
-FONT = r"C:\Windows\Fonts\msyh.ttc"
+_paths.ensure_import_path()
 
-# (标签, 直径, 圆心x, 圆心y)
-CANDS = [
-    ("现在", 220, 860, 1390),
-    ("A", 260, 845, 1420),
-    ("B", 280, 840, 1435),
-]
+import compose_final as CF  # noqa: E402
+import layout as L          # noqa: E402
+import motion               # noqa: E402
+
+BUTTON_BOX = (950, 1080, 1080, 1700)
+
+
+def grab(video: Path, at: float, out: Path) -> Image.Image:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", f"{at:.3f}", "-i", str(video), "-frames:v", "1",
+                    "-update", "1", str(out)], check=True)
+    return Image.open(out).convert("RGB").resize((L.W, L.H), Image.LANCZOS)
 
 
 def main() -> int:
-    # 背景：成片里 S12 中间某帧（已经压好动画）
-    bgp = HERE / "preview" / "sz_bg.png"
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-ss", "55", "-i", str(SAMPLE), "-frames:v", "1",
-                    "-update", "1", str(bgp)], check=True)
-    bg = Image.open(bgp).convert("RGB")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--person", required=True, help="人物母版（03-超分.mp4）")
+    ap.add_argument("--bg", required=True, help="背景帧来源（成片 04-合成.mp4 等）")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--sizes", default="220,260,280", help="候选直径，逗号分隔")
+    ap.add_argument("--person-at", type=float, default=0.0, help="从人物母版抽帧的时刻")
+    ap.add_argument("--bg-at", type=float, default=0.0, help="从背景抽帧的时刻")
+    args = ap.parse_args()
 
-    # 人物帧（同一时间点的原始素材）
-    pp = HERE / "preview" / "sz_person.png"
-    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
-                    "-ss", "147.5", "-i", str(SRC), "-frames:v", "1",
-                    "-update", "1", str(pp)], check=True)
-    person = Image.open(pp).convert("RGB")
+    tmp = Path(args.out).with_name("_size_tmp")
+    bg = grab(Path(args.bg), args.bg_at, tmp / "bg.png")
+    person = grab(Path(args.person), args.person_at, tmp / "person.png")
 
+    crop = (L.HEAD_CX - L.HEAD_BOX // 2, L.HEAD_CY - L.HEAD_BOX // 2,
+            L.HEAD_CX + L.HEAD_BOX // 2, L.HEAD_CY + L.HEAD_BOX // 2)
     tiles = []
-    for tag, d, cx, cy in CANDS:
-        dest = (cx - d // 2, cy - d // 2, cx + d // 2, cy + d // 2)
-        crop = (L.HEAD_CX - L.HEAD_BOX // 2, L.HEAD_CY - L.HEAD_BOX // 2,
-                L.HEAD_CX + L.HEAD_BOX // 2, L.HEAD_CY + L.HEAD_BOX // 2)
-        layer, (lx, ly) = CF.person_card(person, crop, dest, d // 2, L.PIP_FEATHER)
+    for i, raw in enumerate([s for s in args.sizes.split(",") if s.strip()]):
+        d_px = int(float(raw))
+        dest = (L.PIP_CX - d_px // 2, L.PIP_CY - d_px // 2,
+                L.PIP_CX + d_px // 2, L.PIP_CY + d_px // 2)
+        layer, (lx, ly) = CF.person_card(person, crop, dest, d_px // 2, L.PIP_FEATHER)
         im = bg.convert("RGBA")
         im.alpha_composite(layer, (lx, ly))
         im = im.convert("RGB")
@@ -57,20 +64,23 @@ def main() -> int:
         dr = ImageDraw.Draw(im, "RGBA")
         dr.rectangle([0, L.SUBTITLE_BAND[0], L.W, L.SUBTITLE_BAND[1]],
                      outline=(255, 200, 0, 170), width=3)
-        dr.rectangle([950, 1080, L.W, 1700], fill=(255, 0, 0, 26),
-                     outline=(255, 60, 60, 160), width=2)
+        dr.rectangle(BUTTON_BOX, fill=(255, 0, 0, 26), outline=(255, 60, 60, 160), width=2)
         dr.rectangle([0, 0, L.W, 56], fill=(0, 0, 0, 165))
+        tag = "现在" if d_px == L.PIP_W else "ABCDEFG"[min(i, 6)]
         dr.text((14, 12),
-                f"{tag}  d={d} @({cx},{cy})  右距 {L.W - cx - d // 2}  下距 {L.H - cy - d // 2}",
-                font=ImageFont.truetype(FONT, 30), fill=(255, 235, 120, 245))
+                f"{tag}  d={d_px} @({L.PIP_CX},{L.PIP_CY})  "
+                f"右距 {L.W - L.PIP_CX - d_px // 2}  下距 {L.H - L.PIP_CY - d_px // 2}",
+                font=motion.font("yh_b", 30), fill=(255, 235, 120, 245))
         tiles.append(im.resize((360, 640), Image.LANCZOS))
 
     sheet = Image.new("RGB", (368 * len(tiles) - 8, 640), (12, 16, 24))
     for i, t in enumerate(tiles):
         sheet.paste(t, (i * 368, 0))
     sheet = sheet.resize((sheet.width * 2, sheet.height * 2), Image.LANCZOS)
-    sheet.save(OUT)
-    print("saved", OUT, sheet.size)
+    out = Path(args.out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(out)
+    print("saved", out, sheet.size)
     return 0
 
 

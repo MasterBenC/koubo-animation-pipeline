@@ -13,36 +13,76 @@
     c.rounded_rect((80, 300, 1000, 900), 40, fill=C.bg_card)
     c.text(140, 380, "807", font="bahn", size=200, fill=C.amber)
     img = c.finish()          # -> RGBA Image
+
+字体
+    默认从 Windows 字体目录取（微软雅黑 / Bahnschrift / Consolas）。
+    非 Windows 或精简版 Windows：设置 `KOUBO_FONT_DIR` 指向一个放了这些
+    ttf/ttc 的目录，或用 `KOUBO_FONT_DIRS` 给多个目录（`;` 分隔）。
+    找不到字体会**明确报错**并列出找过的目录，不会静默出一个方块字画面。
 """
 from __future__ import annotations
 
 import math
 import os
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
-FONT_DIR = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
-FONTS = {
-    "yh": "msyh.ttc",          # 微软雅黑
-    "yh_b": "msyhbd.ttc",      # 微软雅黑 Bold
-    "yh_l": "msyhl.ttc",
-    "bahn": "bahnschrift.ttf",  # DIN 风格，数字好看
-    "consola": "consola.ttf",
-    "consolab": "consolab.ttf",
-    "deng": "Deng.ttf",
-    "deng_b": "Dengb.ttf",
-    "noto": "NotoSansSC-VF.ttf",
-    "noto_b": "NotoSansSC-VF.ttf",
+# 每个名字给一串候选文件名：先命中先赢，兼容 .ttc/.ttf 和系统差异
+FONT_FILES: dict[str, tuple[str, ...]] = {
+    "yh": ("msyh.ttc", "msyh.ttf", "NotoSansSC-Regular.otf", "NotoSansSC-VF.ttf"),
+    "yh_b": ("msyhbd.ttc", "msyhbd.ttf", "msyh.ttf",
+             "NotoSansSC-Bold.otf", "NotoSansSC-VF.ttf"),
+    "yh_l": ("msyhl.ttc", "msyh.ttf"),
+    "bahn": ("bahnschrift.ttf", "BAHNSCHRIFT.TTF", "msyhbd.ttc"),
+    "consola": ("consola.ttf", "Consolas.ttf", "DejaVuSansMono.ttf"),
+    "consolab": ("consolab.ttf", "Consolas Bold.ttf", "DejaVuSansMono-Bold.ttf"),
+    "deng": ("Deng.ttf", "deng.ttf", "msyh.ttc"),
+    "deng_b": ("Dengb.ttf", "dengb.ttf", "msyhbd.ttc"),
+    "noto": ("NotoSansSC-VF.ttf", "NotoSansSC-Regular.otf", "msyh.ttc"),
+    "noto_b": ("NotoSansSC-VF.ttf", "NotoSansSC-Bold.otf", "msyhbd.ttc"),
 }
+
+
+def _font_dirs() -> list[Path]:
+    """可搜索的字体目录，按优先级：显式环境变量 > 系统字体目录 > 用户字体目录。"""
+    dirs: list[Path] = []
+    for var in ("KOUBO_FONT_DIRS", "KOUBO_FONT_DIR"):
+        raw = os.environ.get(var, "")
+        for piece in raw.split(os.pathsep):
+            if piece.strip():
+                dirs.append(Path(piece.strip()))
+    win = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if win:
+        dirs.append(Path(win) / "Fonts")
+    dirs.append(Path(r"C:\Windows\Fonts"))
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        dirs.append(Path(local) / "Microsoft" / "Windows" / "Fonts")
+    dirs.append(Path.home() / ".local" / "share" / "fonts")
+    # 去重保序
+    seen, out = set(), []
+    for d in dirs:
+        if str(d) not in seen:
+            seen.add(str(d))
+            out.append(d)
+    return out
+
+
+# 兼容旧代码/文档里的 motion.FONT_DIR（只作说明用，取第一个存在的目录）
+FONT_DIR = next((d for d in _font_dirs() if d.is_dir()), Path(r"C:\Windows\Fonts"))
+
+# 下表是历史名字，等价于 FONT_FILES，保留给老场景文件
+FONTS = {k: v[0] for k, v in FONT_FILES.items()}
 
 _font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
 _WARNED_MIXED = [False]   # 字体回退只提示一次，别每帧刷屏
 
-# 排字检查：打开 TRACK 后，每次画字都会把（文本, 包围盒）记进 TEXT_BOXES。
-# 用来逐帧算"有没有两个字压在一起"，比肉眼看缩略图靠谱。
+# 排字检查：打开 TRACK（或 `with text_tracking():`）后，每次画字都会把
+# （文本, 包围盒）记进 TEXT_BOXES。用来逐帧算"有没有两个字压在一起""字有没有出界"。
 TRACK = [False]
 TEXT_BOXES: list = []
 
@@ -51,14 +91,51 @@ TEXT_BOXES: list = []
 _CJK_RE = re.compile(r"[^\x00-\x7F]")
 
 
+def _resolve_font_file(name: str) -> Path:
+    """按名字找字体文件；找不到就把找过的路径全列出来报错（别静默出方块字）。"""
+    cand_names = FONT_FILES.get(name, (name,))
+    tried: list[str] = []
+    for d in _font_dirs():
+        if not d.is_dir():
+            continue
+        for fn in cand_names:
+            p = d / fn
+            tried.append(str(p))
+            if p.exists():
+                return p
+    raise RuntimeError(
+        f"[motion] 找不到字体 {name!r}（候选文件名：{', '.join(cand_names)}）。\n"
+        "  非 Windows / 精简版 Windows：把字体文件放进一个目录，然后\n"
+        '    设置环境变量 KOUBO_FONT_DIR="<那个目录>"\n'
+        "  找过这些位置：\n    " + "\n    ".join(tried or ["（没有可用的字体目录）"]))
+
+
 def font(name: str, size: int) -> ImageFont.FreeTypeFont:
     key = (name, size)
     if key in _font_cache:
         return _font_cache[key]
-    path = FONT_DIR / FONTS.get(name, name)
+    path = _resolve_font_file(name)
     f = ImageFont.truetype(str(path), size)
     _font_cache[key] = f
     return f
+
+
+@contextmanager
+def text_tracking():
+    """打开排字记录，退出时一定复位——中途抛异常也不会留下脏框。
+
+        with text_tracking() as boxes:
+            mod.frame(t)
+            ...  # 读 boxes
+    """
+    prev = TRACK[0]
+    TRACK[0] = True
+    TEXT_BOXES.clear()
+    try:
+        yield TEXT_BOXES
+    finally:
+        TRACK[0] = prev
+        TEXT_BOXES.clear()
 
 
 # ---------------------------------------------------------------- 颜色

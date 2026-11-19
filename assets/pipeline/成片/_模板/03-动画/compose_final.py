@@ -27,14 +27,14 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parents[1] / "scripts"))
+import _paths
 
-import compose
-import layout as L
-import scene_kit as K
+_paths.ensure_import_path()
 
+import layout as L          # noqa: E402
+import scene_kit as K       # noqa: E402
+
+HERE = _paths.HERE
 FPS = 30
 W, H = L.W, L.H
 

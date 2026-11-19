@@ -1,39 +1,49 @@
 # -*- coding: utf-8 -*-
-"""台词 vs 动画节拍 对齐审计。
+"""验收⑤：台词 vs 动画节拍 对齐审计。
 
-原理：逐帧算画面变化量（相邻帧差异像素数），尖峰 = 动画出现了一个新东西；
+原理：逐帧算画面变化量（相邻帧差异**像素个数**），尖峰 = 动画出现了一个新东西；
 把尖峰时间和台词起点摆在同一张表上，就能一眼看出谁早谁晚。
 
+`--thresh` 的单位是**变化像素个数**（1080×1920 画布上），不是帧、也不是秒：
+    900（默认）  只看大动作（整块内容出现/翻页）
+    60           连轻动作、呼吸、死区一起看（找"画面停了 6 秒"用这个）
+
+台词表读 `<项目>/02-剪辑/cues.json`（成片时间轴，由 build_cues.py 生成）。
+
 用法:
-    python audit_timing.py s03 s05          # 只看这两场
-    python audit_timing.py                  # 全部 16 场
-    python audit_timing.py s05 --fps 20
+    python audit_timing.py s03 s05          # 只看这两场（大小写不敏感）
+    python audit_timing.py                  # 全部场景
+    python audit_timing.py s05 --fps 20 --thresh 60
+    python audit_timing.py --json timing.json
 """
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import sys
 from pathlib import Path
 
 import numpy as np
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
-sys.path.insert(0, str(HERE.parents[1] / "scripts"))
+import _paths
 
-import layout as L
+_paths.ensure_import_path()
 
-CUES = HERE.parent / "02-剪辑" / "cues.json"
-SKIP = {"demo_ledger.py"}
+import layout as L  # noqa: E402
+
+CUES = _paths.HERE.parent / "02-剪辑" / "cues.json"
 
 
-def load(path: Path):
-    spec = importlib.util.spec_from_file_location(path.stem, str(path))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
+def load_cues() -> list[dict]:
+    if not CUES.exists():
+        print(f"[!] 找不到台词表 {CUES}\n"
+              "    先跑：python 管线/scripts/build_cues.py <项目>/02-剪辑/asr_verify/words.json "
+              "-o <项目>/02-剪辑/cues.json")
+        return []
+    data = json.loads(CUES.read_text(encoding="utf-8-sig"))
+    if isinstance(data, dict):          # 兼容 {"cues": [...]}
+        data = data.get("cues", [])
+    return data
 
 
 def events(mod, dur: float, fps: float, thresh: float = 900.0, gap: float = 0.28):
@@ -66,23 +76,30 @@ def events(mod, dur: float, fps: float, thresh: float = 900.0, gap: float = 0.28
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("prefix", nargs="*")
+    ap.add_argument("prefix", nargs="*", help="场景 s03 / S03 / s03_xxx")
     ap.add_argument("--fps", type=float, default=15.0)
-    ap.add_argument("--thresh", type=float, default=900.0)
+    ap.add_argument("--thresh", type=float, default=900.0, help="变化像素数阈值")
     ap.add_argument("--json", default="")
     args = ap.parse_args()
 
-    cues = json.loads(CUES.read_text(encoding="utf-8"))
+    cues = load_cues()
     rows = []
 
-    for pid, (sid, stem, t0, t1, dur) in enumerate(L.SCENE_SLOTS):
-        if args.prefix and not any(stem.startswith(p) or sid.lower() == p.lower()
-                                   for p in args.prefix):
+    slots = {stem.lower(): (sid, stem, t0, t1, dur) for sid, stem, t0, t1, dur in L.SCENE_SLOTS}
+    if not slots:
+        print("[!] layout.SCENE_SLOTS 是空的：节拍审计需要「场次 -> 起止时间」这张表。\n"
+              "    装新片时把 SCENE_SLOTS 整块换成本片的场次表（见 references/schemas.md）。")
+        return 2
+
+    for p in _paths.discover_scenes():
+        key = p.stem.lower()
+        if key not in slots:
+            print(f"[注] {p.name} 不在 layout.SCENE_SLOTS 里，跳过（先补场次表）")
             continue
-        p = HERE / "scenes" / f"{stem}.py"
-        if not p.exists():
+        sid, stem, t0, t1, dur = slots[key]
+        if args.prefix and not _paths.matches(stem, args.prefix):
             continue
-        mod = load(p)
+        mod = _paths.load_scene(p)
         ev = events(mod, dur, args.fps, args.thresh)
         local_cues = [
             (round(max(0.0, c["start"] - t0), 2), round(min(dur, c["end"] - t0), 2), c["text"])
@@ -102,7 +119,8 @@ def main() -> int:
                 print(f"{t:9.2f}s   台词   {val}")
 
     if args.json:
-        Path(args.json).write_text(json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path(args.json).write_text(json.dumps(rows, ensure_ascii=False, indent=2),
+                                   encoding="utf-8")
         print(f"\n已写 {args.json}")
     return 0
 

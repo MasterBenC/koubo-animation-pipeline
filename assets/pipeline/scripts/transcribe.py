@@ -117,7 +117,9 @@ def main() -> int:
     ap.add_argument("-o", "--out", default=None, help="输出目录，默认 <input_stem>_asr")
     ap.add_argument("--model", default="large-v3")
     ap.add_argument("--lang", default="zh")
-    ap.add_argument("--model-root", default=r"C:\Users\benhu\Desktop\档案001\work\models")
+    ap.add_argument("--model-root", default=None,
+                    help="模型下载目录；默认用 faster-whisper 的通用缓存，"
+                         "或用环境变量 KOUBO_ASR_MODELS 指定")
     ap.add_argument("--threads", type=int, default=16)
     ap.add_argument("--beam", type=int, default=5)
     ap.add_argument("--no-vad", action="store_true")
@@ -139,8 +141,9 @@ def main() -> int:
     from faster_whisper import WhisperModel
 
     t0 = time.time()
+    model_root = args.model_root or os.environ.get("KOUBO_ASR_MODELS") or None
     model = WhisperModel(args.model, device="cpu", compute_type="int8",
-                         download_root=args.model_root, cpu_threads=args.threads)
+                         download_root=model_root, cpu_threads=args.threads)
     print(f"[model] {args.model} loaded in {time.time()-t0:.1f}s")
 
     t1 = time.time()

@@ -25,10 +25,37 @@
 
     CONTENT  936×890   x 72-1008, y 400-1290
     字幕带   y 1300-1460（用户后期烧，一个像素都不许进）
+
+## 时间口径（只有一种写法，别再搞反）
+
+    SYNC_LEAD = 0.12   画面比台词**早** 0.12 秒出现（视觉领先）
+
+场景里想用就：
+
+    def frame(t):
+        ts = L.lead(t)      # == t + SYNC_LEAD，画面提前 0.12s
+        ...
+
+`t -= 0.12` 是反的（那是画面延后），旧文档写成那样是错的。
+
+## 单集数据（装新片时整块替换）
+
+    SCHEDULE / SCENE_SLOTS 是「这一支片子」的分段和场次表，不是版式参数。
+    装新片时整块换掉；没换会导致验收脚本找不到场景、节拍表对不上。
+    版式参数只管 PROFILES 里对应的那一块。
 """
 from __future__ import annotations
 
 import os
+
+# ============================================================ 时间口径
+
+SYNC_LEAD = 0.12   # 画面领先台词的秒数（正向：画面更早出现）
+
+
+def lead(t: float) -> float:
+    """场景里统一用这个：把时间轴前移 SYNC_LEAD，让画面略领先台词。"""
+    return t + SYNC_LEAD
 
 # ============================================================ 模式表
 
@@ -40,6 +67,7 @@ PROFILES: dict[str, dict] = {
         size=(1080, 1920),
         safe=dict(top=140, right=72, bottom=460, left=60),
         content=(72, 400, 1008, 1290),
+        title=(254, 360),          # 标题层允许区（内容区上方的空带）
         subtitle_band=(1300, 1460),
         pip=dict(cx=840, cy=1555, r=140, border=2, feather=10.0,
                  shadow=22, shadow_offset=(0, 10), shadow_alpha=120),
@@ -55,6 +83,7 @@ PROFILES: dict[str, dict] = {
         size=(1080, 1920),
         safe=dict(top=140, right=72, bottom=460, left=60),
         content=(72, 220, 1008, 1290),
+        title=(140, 212),          # 互切模式没有圆头像，标题层可以更靠上
         subtitle_band=(1300, 1460),
         pip=None,
         head=dict(box=520, cx=570, cy=838),   # 互切时人物全屏，此值仅备用
@@ -64,12 +93,12 @@ PROFILES: dict[str, dict] = {
     # ---------------- 横屏 16:9（等用户给模板，参数留空）
     "landscape/corner": dict(
         status="todo", mode="corner", size=(1920, 1080),
-        safe=None, content=None, subtitle_band=None,
+        safe=None, content=None, title=None, subtitle_band=None,
         pip=None, head=None, enter=0.0, exit=0.0, pop=0.0,
     ),
     "landscape/cut": dict(
         status="todo", mode="cut", size=(1920, 1080),
-        safe=None, content=None, subtitle_band=None,
+        safe=None, content=None, title=None, subtitle_band=None,
         pip=None, head=None, enter=0.0, exit=0.0, pop=0.0,
     ),
 }
@@ -85,7 +114,7 @@ def available() -> list[str]:
 
 def activate(name: str) -> None:
     """切换模式并重算全部模块级常量。"""
-    global ACTIVE_PROFILE, MODE, W, H, SAFE, CONTENT, SUBTITLE_BAND
+    global ACTIVE_PROFILE, MODE, W, H, SAFE, CONTENT, TITLE_BAND, SUBTITLE_BAND
     global CONTENT_TOP, CONTENT_BOTTOM, CONTENT_LEFT, CONTENT_RIGHT
     global PIP_CX, PIP_CY, PIP_R, PIP, PIP_W, PIP_H, PIP_RADIUS
     global PIP_BORDER, PIP_FEATHER, PIP_SHADOW, PIP_SHADOW_OFFSET, PIP_SHADOW_ALPHA
@@ -104,6 +133,10 @@ def activate(name: str) -> None:
     W, H = p["size"]
     SAFE = p["safe"]
     CONTENT = p["content"]
+    if p["safe"] and p["content"]:
+        TITLE_BAND = p["title"] or (p["safe"]["top"], p["content"][1] - 40)
+    else:
+        TITLE_BAND = (0, 0)
     SUBTITLE_BAND = p["subtitle_band"]
     CONTENT_LEFT, CONTENT_TOP, CONTENT_RIGHT, CONTENT_BOTTOM = CONTENT
 
@@ -133,7 +166,7 @@ def activate(name: str) -> None:
     PIP_ENTER, PIP_EXIT, PIP_POP = p["enter"], p["exit"], p["pop"]
 
 
-# ============================================================ 时间轴（本片专用）
+# ============================================================ 时间轴（★ 单集数据，装新片整块替换）
 
 # 段落状态：'full' 全屏 / 'pip' 缩角（cut 模式下语义不同，见 references/modes.md）
 SCHEDULE = [

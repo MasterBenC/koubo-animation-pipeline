@@ -5,18 +5,22 @@
 这样 16 个场景看起来是一条片子，而不是 16 个人做的 PPT。
 
 坐标纪律（与 layout.py 一致）：
-    X  = 72    内容左边界
-    XN = 540   左栏右边界
-    y > 960 且 x > 540 是人物画中画，禁止放关键信息
-    正文只在 y ∈ [200, 1600]
+    所有落点从 layout 的常量推：X = L.CONTENT[0]（左沿）、CONTENT_TOP/BOTTOM、
+    SAFE["top"]。圆头像 / 字幕带的位置也在 layout 里，场景里一律不写死像素。
+    标题层只用 `scene_head()`，它保证字落在 layout.TITLE_BAND 内。
+
+画面里的字（2026-11 定稿）：每场一行标题 + 可选一句副标，回答"这场在讲什么"。
+    文案集中在下面这个 `TEXT` 字典里，一行一场；改字只改这里，重跑场景即可。
 """
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+import _paths
+
+_paths.ensure_import_path()
 
 from PIL import Image, ImageDraw
 
@@ -25,8 +29,30 @@ from motion import (C, Canvas, clamp, ease_in_out_cubic, ease_out_back, ease_out
                     lerp, stage, vertical_gradient)
 
 W, H = L.W, L.H
-X = 72
-XN = 540
+X = L.CONTENT[0]          # 内容左沿（默认 72）
+XN = L.W // 2             # 左栏右界（默认 540）
+
+# ---------------------------------------------------------------- 标题层文案
+# 一行一场：键 = 场景文件主干，值 = 标题 或 (标题, 副标)。
+# 副标可省；标题不复述台词，只回答"这场在讲什么"；数字口径要和画面、字幕一致。
+TEXT: dict[str, object] = {
+    # "s01_valuation_haircut": ("估值被砍掉三分之一", "两万亿的预期，一夜回到一万五"),
+}
+
+# 标题层开关：mid（标题+副标，默认）/ light（只标题）/ off（纯图，给用户看两版用）
+TITLE_MODE = os.environ.get("KOUBO_TITLE", "mid").strip().lower()
+
+
+def title_for(key: str) -> tuple[str, str]:
+    """取某场的 (标题, 副标)；没配就是两个空串。"""
+    hit = TEXT.get(key)
+    if not hit:
+        return ("", "")
+    if isinstance(hit, str):
+        return (hit, "")
+    title = str(hit[0]) if hit else ""
+    sub = str(hit[1]) if len(hit) > 1 and hit[1] else ""
+    return (title, sub)
 
 # ---------------------------------------------------------------- 底层
 
@@ -55,8 +81,14 @@ def canvas(t: float = 0.0, ss: int = 2) -> Canvas:
 
 # ---------------------------------------------------------------- 文字
 
-def chapter(c: Canvas, t: float, idx: str, label: str, y: float = 232, t_in: float = 0.10):
-    """左上角章节角标：一条琥珀竖条 + 编号 + 名称。"""
+def chapter(c: Canvas, t: float, idx: str, label: str, y: float | None = None,
+            t_in: float = 0.10):
+    """左上角章节角标：一条琥珀竖条 + 编号 + 名称。
+
+    与 `scene_head()` **二选一**：章节标是"第几章"的导航，标题层是"这场讲什么"。
+    两个都上会在同一条带里打架（这也是当年"字太多"的来源）。
+    """
+    y = L.TITLE_BAND[0] if y is None else y
     a = stage(t, t_in, 0.45)
     if a <= 0:
         return
@@ -65,8 +97,10 @@ def chapter(c: Canvas, t: float, idx: str, label: str, y: float = 232, t_in: flo
     c.text(X + 90, y - 4, label, "yh", 38, C.text_dim, opacity=a, tracking=3)
 
 
-def headline(c: Canvas, t: float, text: str, y: float = 322, size: int = 60,
+def headline(c: Canvas, t: float, text: str, y: float | None = None, size: int = 60,
              t_in: float = 0.20, dur: float = 0.55, color=None):
+    """内容区大标题（不是标题层）。y 默认落在内容区上沿内侧。"""
+    y = L.CONTENT[1] + 40 if y is None else y
     a = stage(t, t_in, dur)
     if a <= 0:
         return
@@ -105,6 +139,79 @@ def rule(c: Canvas, t: float, y: float, x0: float = X, x1: float = XN,
     if d <= 0:
         return
     c.line([(x0, y), (x0 + (x1 - x0) * d, y)], color, width=width)
+
+
+# ---------------------------------------------------------------- 标题层（唯一允许的画字入口）
+_SCRIM_CACHE: dict[int, Image.Image] = {}
+
+
+def scrim_box() -> tuple[int, int, int, int]:
+    """顶部薄膜覆盖的区域 (x0, y0, x1, y1)，满幅。
+
+    验收脚本（①④）会把这个矩形排除在「内容」之外：它是固定的背景件，
+    不是这一场画出来的东西。标题落在里面的位置由 ⑥ audit_text_band 单独查。
+    """
+    return (0, 0, W, int(L.CONTENT[1] - 30))
+
+
+def scrim_top(height: int | None = None, strength: int = 210) -> Image.Image:
+    """顶部深色渐隐薄膜：照片底上标题也读得清。按高度缓存，别每帧算。"""
+    h = int(height or (L.CONTENT[1] - 30))
+    if h in _SCRIM_CACHE:
+        return _SCRIM_CACHE[h]
+    grad = vertical_gradient(W * 2, h * 2, (6, 10, 16, strength), (6, 10, 16, 0))
+    _SCRIM_CACHE[h] = grad
+    return grad
+
+
+def scene_head(c: Canvas, key, t: float, t_in: float = 0.30, dur: float = 0.50,
+               scrim: bool = True) -> None:
+    """画标题层：左侧琥珀竖条 + 一行标题（44 Bold 米白）+ 可选副标（25 冷灰）。
+
+    参数
+        key   场景文件主干（`s07_55cents`），文案从 `TEXT` 里取；
+              也可以直接传 `("标题", "副标")` 临时覆盖。
+        t     场景内秒数（已经过 `L.lead()` 的话就是提前后的时间）。
+        t_in  入场时刻。铁律：新元素贴在台词起点，视觉略领先。
+    `KOUBO_TITLE=light` 只画标题；`off` 整层不画（给用户看纯图版）。
+
+    落区由 `layout.TITLE_BAND` 决定（corner 是 y 254–360），永不进字幕带。
+    """
+    if TITLE_MODE == "off":
+        return
+    if isinstance(key, (tuple, list)):
+        title, sub = (key + ("",))[:2]
+    else:
+        title, sub = title_for(str(key))
+    if not title:
+        return
+
+    top, bottom = L.TITLE_BAND
+    a = stage(t, t_in, dur)
+    if a <= 0:
+        return
+
+    if scrim:
+        c.composite(scrim_top(), opacity=min(1.0, a * 1.4))
+
+    # 左侧 5px 琥珀竖条：从上往下长出来
+    bar_h = 46 * stage(t, t_in, dur * 0.7)
+    c.rect((X, top + 4, X + 5, top + 4 + bar_h), fill=C.amber, opacity=a)
+
+    # 标题：先垫一层 55% 黑影，照片底上也读得清
+    ty = top - 6
+    c.text(X + 22 + 2, ty + 3, title, "yh_b", 44, (0, 0, 0, 255), opacity=a * 0.55)
+    dy = (1 - ease_out_cubic(a)) * 10
+    c.text(X + 22, ty + dy, title, "yh_b", 44, C.text, opacity=a)
+
+    if TITLE_MODE == "light" or not sub or bottom - top < 100:
+        return
+
+    sa = stage(t, t_in + 0.12, dur)
+    if sa <= 0:
+        return
+    sy = top + 58 + (1 - ease_out_cubic(sa)) * 8
+    c.text(X + 22, sy, sub, "yh", 25, C.text_dim, opacity=sa, tracking=1)
 
 
 # ---------------------------------------------------------------- 图形
@@ -225,3 +332,25 @@ def dim(c: Canvas, alpha: float = 0.55):
     if alpha <= 0:
         return
     c.rect((0, 0, W, H), fill=(6, 10, 16, int(255 * alpha)))
+
+
+def letter_card(c: Canvas, box, letter: str, sub: str = "", t_in: float = 0.0,
+                alpha: float = 1.0, color=None) -> None:
+    """首字母灰卡：没有授权真人图时的标准替身。
+
+    「配图即指控」——查不到、拿不到授权的人物，宁可上一张灰卡，也不要配错人。
+    卡面只有首字母 + 一行小字（机构/头衔），不伪造肖像。
+
+        K.letter_card(c, (X, 520, X + 420, 940), "N", "NVIDIA · 供应商", t_in=1.2)
+    """
+    a = stage(t, t_in, 0.40) * alpha
+    if a <= 0:
+        return
+    x0, y0, x1, y1 = box
+    c.rounded_rect(box, 20, fill=(28, 38, 52, 235), outline=(127, 166, 201, 70),
+                   width=2, opacity=a)
+    cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+    c.text(cx, cy - 10, letter[:2], "yh_b", int((y1 - y0) * 0.38), color or C.text_dim,
+           anchor="mm", opacity=a * 0.9)
+    if sub:
+        c.text(cx, y1 - 40, sub, "yh", 24, C.text_dim, anchor="mm", opacity=a * 0.9)

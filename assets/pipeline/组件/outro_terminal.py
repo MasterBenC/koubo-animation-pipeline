@@ -55,20 +55,58 @@ MASK_RGB = (8, 12, 16)
 YELLOW = (255, 214, 0)
 DIM = (118, 138, 156)
 
-FONT_DIR = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+# 字体：每个名字给一串候选（先命中先赢），目录按「环境变量 > 系统 > 用户」找。
+# 找不到就明确报错并列出找过的路径，不会静默出方块字。
 FONT_FILES = {
-    "mono": "consola.ttf",
-    "mono_b": "consolab.ttf",
-    "cjk_b": "msyhbd.ttc",
-    "cjk": "msyh.ttc",
+    "mono": ("consola.ttf", "Consolas.ttf", "DejaVuSansMono.ttf"),
+    "mono_b": ("consolab.ttf", "Consolas Bold.ttf", "DejaVuSansMono-Bold.ttf"),
+    "cjk_b": ("msyhbd.ttc", "msyhbd.ttf", "msyh.ttc", "NotoSansSC-Bold.otf"),
+    "cjk": ("msyh.ttc", "msyh.ttf", "NotoSansSC-Regular.otf", "NotoSansSC-VF.ttf"),
 }
 _font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont] = {}
+
+
+def _font_dirs() -> list[Path]:
+    dirs: list[Path] = []
+    import os
+    for var in ("KOUBO_FONT_DIRS", "KOUBO_FONT_DIR"):
+        for piece in os.environ.get(var, "").split(os.pathsep):
+            if piece.strip():
+                dirs.append(Path(piece.strip()))
+    win = os.environ.get("WINDIR") or os.environ.get("SystemRoot")
+    if win:
+        dirs.append(Path(win) / "Fonts")
+    dirs.append(Path(r"C:\Windows\Fonts"))
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        dirs.append(Path(local) / "Microsoft" / "Windows" / "Fonts")
+    dirs.append(Path.home() / ".local" / "share" / "fonts")
+    return dirs
+
+
+FONT_DIR = next((d for d in _font_dirs() if d.is_dir()), Path(r"C:\Windows\Fonts"))
+
+
+def _resolve(name: str) -> Path:
+    tried = []
+    for d in _font_dirs():
+        if not d.is_dir():
+            continue
+        for fn in FONT_FILES.get(name, (name,)):
+            p = d / fn
+            tried.append(str(p))
+            if p.exists():
+                return p
+    raise RuntimeError(
+        f"[outro] 找不到字体 {name!r}（候选：{', '.join(FONT_FILES.get(name, (name,))) }）。\n"
+        '  设置 KOUBO_FONT_DIR="<放了这些字体的目录>" 后重试。\n'
+        "  找过：\n    " + "\n    ".join(tried or ["（没有可用字体目录）"]))
 
 
 def font(name: str, size: int) -> ImageFont.FreeTypeFont:
     key = (name, size)
     if key not in _font_cache:
-        _font_cache[key] = ImageFont.truetype(str(FONT_DIR / FONT_FILES[name]), size)
+        _font_cache[key] = ImageFont.truetype(str(_resolve(name)), size)
     return _font_cache[key]
 
 

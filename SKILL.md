@@ -1,10 +1,12 @@
 ---
 name: koubo-animation-pipeline
 description: |
-  口播视频配动画的完整生产线。给一条真人出镜的口播视频，做出「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的 9:16 竖屏成片，含剪辑、动画、合成、响度、五道自动验收。
+  口播视频配动画的完整生产线。给一条真人出镜的口播视频，做出「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的 1080×1920 竖屏成片，含剪辑、动画、合成、响度、六道自动验收。
+  平台：Windows Only（字体走系统字体目录、脚本用 ffmpeg/PowerShell 惯例）。
   触发：给口播配动画 / 口播剪辑 / 口播视频做成片 / 竖屏知识视频 / 9:16 讲解片 / 口播加图表 / 财经口播 / 「这条口播帮我做成片」「给视频配动画」「口播太单调了」。
   也适用于：一条口播要拆成多个动画场景、要统一的版式规范、要有自动验收不靠肉眼。
-  English: Turn a talking-head video into a 9:16 explainer with a circular face-cam PiP and full-width animated scenes — cutting, layout, per-scene animation, compositing, loudness, and five automated QA passes.
+  不适用：横屏长视频、无人出镜的纯剪辑、多人对话、只做一段动效素材。
+  English: Turn a talking-head video into a 9:16 (1080x1920) explainer with a circular face-cam PiP and full-width animated scenes — cutting, layout, per-scene animation, compositing, loudness, and six automated QA passes. Windows only.
   Trigger: talking-head to animation, explainer video, 9:16 knowledge video, add motion graphics to a talking head, voiceover video editing.
 ---
 
@@ -12,7 +14,12 @@ description: |
 
 把一条真人出镜的口播视频，做成「人物缩成右下角圆头像 + 全幅动画讲清楚内容」的竖屏成片。
 
-这套流程已经在三条成片上跑通过（264 s / 336.6 s / 326.1 s，16–21 个动画场景，−14 LUFS）：
+> **平台：Windows Only。** 版式、字体、脚本默认值都是按 Windows + 1080×1920 竖屏标定的。
+> 脚本硬依赖 `ffmpeg` / `ffprobe` / Python 3.10+ / `pillow` / `numpy`；字体从
+> `%WINDIR%\Fonts`（微软雅黑 / Bahnschrift / Consolas）取，非 Windows 需设
+> `KOUBO_FONT_DIR` 指向一个放了同名字体的目录。
+
+这套流程已经在三条成片上跑通过（264 s / 326.1 s / 336.6 s，16–21 个动画场景，−14 LUFS）：
 第一条定版式，后两条是案例回灌——**用户真实改过什么、我们因此改了什么，全写在
 `references/cases-2026-11.md`**。开工前先读它，再读 `references/pitfalls.md`。
 **不要重新发明版式和验收方式**，照这个走。
@@ -29,21 +36,25 @@ python <这个 skill 的目录>/install.py --root "<用户的工作区>" --name 
 
 ```
 <工作区>/管线/
-├── scripts/          ASR、渲染、看片
+├── scripts/          ASR、剪辑、渲染、看片、字幕
 ├── 组件/             片尾组件
-├── 生产手册.md        人看的完整手册
+├── 生产手册.md        人看的流程索引（细则都在本 skill 的 references/）
 └── 成片/<项目名>/
     ├── BRIEF.md      立项卡
     ├── 01-原片/ 01-asr/ 02-剪辑/
-    └── 03-动画/      版式、场景工具箱、渲染、五道验收
+    └── 03-动画/      版式、场景工具箱、渲染、六道验收
 ```
 
 装完先确认这一步能过：
 
 ```bash
 cd "<工作区>/管线/成片/<项目名>/03-动画"
-python -c "import layout as L; print(L.PIP)"
+python -c "import layout as L; print(L.PIP, L.CONTENT, L.TITLE_BAND)"
 ```
+
+> 脚本之间不靠 `PYTHONPATH` 串：`03-动画/_paths.py` 会向上找到 `管线/scripts`，
+> `render_scene.py` 会把场景目录自己塞进 `sys.path`。所以别在文档里教人设 `PYTHONPATH`
+> 到某个私人绝对路径——换台机器就废。
 
 ---
 
@@ -63,23 +74,43 @@ python -c "import layout as L; print(L.PIP)"
 这条比「画面好看」优先。
 
 ### 2. 版式只有一个真源
-所有坐标来自 `03-动画/layout.py`。**任何场景都不许写死坐标**，改版式只改这一个文件。
+所有坐标来自 `03-动画/layout.py`。**任何场景都不许写死坐标**，改版式只改这一个文件
+（模式参数改 `PROFILES` 里对应那一块）。
 
 ### 3. 节拍跟着台词走，不按秒均摊
-新元素出现的时刻 = 对应台词起点 − 0.00~0.15 秒（视觉略领先）。**绝不晚于台词。**
-任何超过 1.2 秒的画面静止都是缺陷。
+新元素出现的时刻 = 对应台词起点 **− 0.00~0.15 秒**（视觉略领先，读起来最舒服）。
+**绝不晚于台词。** 任何超过 1.2 秒的画面静止都是缺陷。
+
+代码口径只有一种写法（别搞反）：
+
+```python
+def bg_frame(t):                 # ★ 背景必须提成模块级函数，验收脚本靠它做差
+    return S.bg("photo", t, DURATION, key="ph_capitol", blur=26, dim=0.86)
+
+
+def frame(t):
+    c = bg_frame(t)
+    ts = L.lead(t)      # == t + L.SYNC_LEAD(0.12)，画面提前 0.12s
+```
+
+`t -= 0.12` 是让画面**延后**，方向正好反了；旧版本文档写成那样是错的。
+
+**`bg_frame(t)` 不是可选项。** `check_layout.py` 拿「只有背景的同一帧」做差来判断内容越界；
+场景里若把 `c = S.bg(...)` 写在 `frame()` 内部，它只能退回通用底，照片底/双色底会整帧都是差异，
+一场就能假报几十万像素越界（EP.05 19 场全假失败一遍才发现）。缺 `bg_frame` 时脚本现在会打印
+`[!] 本场缺模块级 def bg_frame(t)`，照着提示把那行提出来即可。
 
 ### 4. 每写完一场立刻自检，不要攒到最后
-`check_layout` / `audit_band` 一次只跑几秒，攒到最后一起改会互相干扰。
+`check_layout` / `audit_band` / `audit_text_band` 一场只跑几秒，攒到最后一起改会互相干扰。
 
 ### 5. 不要先写动画再对时间
 先把台词表（`cues.json`）打印出来，把每个视觉元素挂到某一句上，再写代码。
 第一版反着做，返工最狠的就是这里。
 
 ### 6. 参数类决策给图不给话
-用户说「再大一点」「往下一点」时，**一次渲染 3 档真图**给他选，
-不要用文字描述让他脑补。这个片子光圆头像位置就来回改了 4 轮，
-改成「一次给 3 档」后一轮就定了。
+用户说「再大一点」「往下一点」时，**一次渲染 3 档真图**给他选
+（`pos_options.py` / `size_options.py` 就是干这个的），不要用文字描述让他脑补。
+这个片子光圆头像位置就来回改了 4 轮，改成「一次给 3 档」后一轮就定了。
 
 ### 7. 破坏性操作先复述再动手 ★
 用户说「把 EP03 都删掉」时，先回一句「我要删的是 A，不是 B，对吗？」
@@ -92,7 +123,7 @@ python -c "import layout as L; print(L.PIP)"
 
 ---
 
-## 画面里的字：只做标题层（2026-11 定稿）
+## 画面里的字：只做标题层
 
 竖屏口播最容易做错的两头：做成满屏解释文字（像 PPT），或者一个字都不放（像半成品）。
 用户的最终口径是**只保留标题层**——每场一行标题、可选的副标，回答"这场在讲什么"：
@@ -100,12 +131,12 @@ python -c "import layout as L; print(L.PIP)"
 | 项 | 值 |
 |---|---|
 | 结构 | 一行标题（微软雅黑 Bold 44 / 米白）+ 一句副标（25 / 冷灰），副标可省 |
-| 落区 | 只在内容区上方的空带（本片 y 254–360）；内容区 400–1290、**字幕带一像素不碰** |
-| 可读性 | 顶部压一层深色渐隐薄膜 + 标题垫 55% 黑影；照片底上也要读得清 |
+| 落区 | 只在 `layout.TITLE_BAND` 里（corner 模式 y 254–360）；内容区 400–1290、**字幕带一像素不碰** |
+| 可读性 | 顶部压一层深色渐隐薄膜（`K.scrim_top()`）+ 标题垫 55% 黑影；照片底上也要读得清 |
 | 装饰 | 左侧 5px 琥珀竖条，入场时从上往下长出来 |
 | 入场 | 每场 `t_in≈0.3 s`、0.5 s 淡入；副标入场轻微上浮 |
-| 文案 | 一个 `TEXT = {场景名: (标题, 副标)}` 字典，改字只改这一处，重跑场景生成 |
-| 开关 | `EP03_TEXT=mid / light / off`（标题+副标 / 只标题 / 回纯图），方便给用户看两版 |
+| 实现 | 只有一个入口 `K.scene_head(c, key, t)`；文案在场景目录的 `TEXT` 字典里，一行一场 |
+| 开关 | 环境变量 `KOUBO_TITLE=mid / light / off`（标题+副标 / 只标题 / 回纯图），方便给用户看两版 |
 
 三条纪律：
 
@@ -124,16 +155,46 @@ python -c "import layout as L; print(L.PIP)"
 ```bash
 python "<工作区>/管线/scripts/transcribe.py" "<原片>" -o "<项目>/01-asr" --model large-v3 --lang zh
 ```
-产物：`逐字稿.md`（带时间码）、`words.json`（词级）、`raw.srt`。
+产物：`逐字稿.md`（带时间码）、`words.json`（**词级** start/end）、`raw.srt`、`audio.wav`。
 
 **ASR 不是为了出字幕，是为了知道每句话在第几秒。** 后面所有节拍都从这张表推。
 
-### 阶段 2 · 剪辑决策
+### 阶段 2 · 剪辑决策 → 粗剪 → 时间映射 → 台词表
+
+四步一条链，少一步后面必断（`final.srt` 要的就是这条链的产物）：
+
 ```bash
-python "<工作区>/管线/scripts/build_edl.py" --cuts "<项目>/02-剪辑/cuts.json" --out "<项目>/02-剪辑/segments.json"
+# ① 定剪点：cuts.json -> segments.json + timemap.json
+python "<工作区>/管线/scripts/build_edl.py" "<项目>/02-剪辑/cuts.json" -o "<项目>/02-剪辑"
+
+# ② 粗剪：按 keep 段重掐，顺手写 timemap（源时间 <-> 成片时间）
+python "<工作区>/管线/scripts/cut.py" --input "<项目>/01-原片/raw.mp4" \
+    --segments "<项目>/02-剪辑/segments.json" \
+    --out "<项目>/02-剪辑/02-粗剪.mp4" \
+    --timemap "<项目>/02-剪辑/timemap.json"
+
+# ③ 复转比对（相似度 <0.95 就要回头看剪点，参考值 0.968）
+python "<工作区>/管线/scripts/transcribe.py" "<项目>/02-剪辑/02-粗剪.mp4" \
+    -o "<项目>/02-剪辑/asr_verify"
+
+# ④ 台词表（成片时间轴）：场景挂节拍 + audit_timing 都读它
+python "<工作区>/管线/scripts/build_cues.py" "<项目>/02-剪辑/asr_verify/words.json" \
+    -o "<项目>/02-剪辑/cues.json" --dump
 ```
-剪完**必须重新转录比对相似度**，低于 0.95 就要回头看剪点。
-然后生成 `timemap.json`（原片时间 ↔ 成片时间），这是后面所有时间的换算基准。
+
+`final.srt` 也在这一步之后随时可出（阶段 7 验收全绿再出最终版）：
+
+```bash
+python "<工作区>/管线/scripts/make_srt.py" --proj "<项目>" -o "<项目>/final.srt" --max-chars 18
+```
+
+> **整段不剪的片子**（口播 99% 有语音、没有口误段，EP.05 就是这种）不要硬走 ①②③：
+> 直接 `01-原片/raw.mp4` → `03-超分.mp4`，`timemap.json` 只写
+> `{"output_duration": <原片时长>, "note": "无剪辑，原片整段使用"}`（`compose_final.py` 只读这一项），
+> `cues.json` 用 `01-asr/words.json` 直接生成，**再复制一份到 `02-剪辑/cues.json`** 给 `audit_timing`。
+
+> 剪过片就一定用**复转的那份** `asr_verify/words.json` 做字幕和 cues；
+> 用原片那份会整体错位，而且不报错。字段定义见 `references/schemas.md`。
 
 ### 阶段 3 · 画面提升
 ```
@@ -147,7 +208,7 @@ scale=1080:1920:flags=lanczos,unsharp=5:5:0.5:5:5:0
 
 | | 右下角画中画 | 人与动画互切 |
 |---|---|---|
-| 竖屏 9:16 | `portrait/corner` ✅ | `portrait/cut`（几何已定） |
+| 竖屏 9:16 | `portrait/corner` ✅ | `portrait/cut`（几何已定，状态机待实现） |
 | 横屏 16:9 | `landscape/corner` 待模板 | `landscape/cut` 待模板 |
 
 判据（顺序问，任意一个指向互切就用互切）：
@@ -155,17 +216,30 @@ scale=1080:1920:flags=lanczos,unsharp=5:5:0.5:5:5:0
 胸像 + 背景干净 + 金句型 + 竖屏信息流 → 右下角。
 完整判据和拍摄自检见 `references/modes.md`。
 
-切模式：`set LAYOUT_PROFILE=portrait/cut` 或 `layout.activate(...)`。
+**切模式只有一个合法入口**（`layout.py` 里 `PROFILES` + `activate()`）：
+
+```bash
+set LAYOUT_PROFILE=portrait/cut          # Windows，进程级
+```
+```python
+import layout as L
+L.activate("portrait/cut")               # 代码里切
+```
+
+不要直接给模块级 `SAFE` / `CONTENT` / `PIP_CX` 赋值——`activate()` 会在切换时重算它们，
+手改会被下一次 activate 覆盖。
 
 改 `03-动画/layout.py` 里**对应模式的那一块**：
 
 | 区域 | 默认值 | 说明 |
 |---|---|---|
 | 内容区 | x 72–1008，y 400–1290 | 动画主体整个在这里 |
-| 字幕带 | y 1300–1460 | **禁区，一个像素都不许进** |
+| 标题层 | y 254–360（`TITLE_BAND`） | 只放标题 + 副标 |
+| 字幕带 | y 1300–1460 | **禁区，一个像素都不许进**（图形也不行） |
 | 圆头像 | 直径 280，圆心 (840,1555) | 右距 100、下距 345 |
 | 头部裁切 | 默认 520×520 中心 (570,838) | 从源画幅里裁头；**实测过 980 @ (590,932)**，见下 |
-| 画面延迟 | `SYNC_DELAY = 0.12` | 场景 `frame(t)` 里先 `t -= 0.12`，画面略晚于台词 |
+| 画面领先 | `SYNC_LEAD = 0.12` | 场景里 `ts = L.lead(t)`，画面略**早于**台词 |
+| 场次表 | `SCHEDULE` / `SCENE_SLOTS` | **单集数据**，装新片时整块替换 |
 
 **换人换片子必须重新标定头部裁切框**，而且别信默认值：EP.03 的机位实测是
 `box=980 @ (590,932)`——比默认的 520×520 大了一倍，照默认裁会把肩膀切掉。
@@ -185,56 +259,136 @@ python 03-动画/make_check_png.py <成片帧.png> 构图验收.png
 > 细节见 `references/layout-rules.md`。
 
 ### 阶段 5 · 写场景
-每个场景一个文件：`scenes/sNN_名字.py`，导出 `DURATION` 和 `frame(t)`。
+
+每个场景一个文件：`scenes/sNN_名字.py`，**只要求 `DURATION` 和 `frame(t)`**
+（`render_scene.py` 强制这个契约，没有 `draw()` 这种别名）：
 
 ```python
-def draw(t):
-    c = K.canvas(t)
-    K.chapter(c, t, "01", "利润表 · 底层结构", 220)
-    K.headline(c, t, "每赚 1 块钱，5 毛 5 交出去", 282, 54, t_in=0.15)
-    coin(c, t); bar(c, t); vendors(c, t)
+# scenes/s07_55cents.py
+import layout as L
+import scene_kit as K
+import scene_lib as S
+from motion import C, stage
+
+DURATION = 14.5
+
+
+def bg_frame(t: float):          # ★ 必须：验收脚本用它渲「同一帧的纯背景」做差
+    return S.bg("spot", t, DURATION, color=(22, 30, 42))
+
+
+def frame(t: float):
+    c = bg_frame(t)
+    ts = L.lead(t)                  # 画面领先 0.12s，方向是 +
+    K.scene_head(c, "s07_55cents", ts)   # 标题层：落区由 L.TITLE_BAND 管
+    # 主视觉在 L.CONTENT（x 72–1008 / y 400–1290）内绘制，坐标一律从 L 推
+    left, top, right, bottom = L.CONTENT
+    a = stage(ts, 0.8, 0.6)
+    if a > 0:
+        c.text(left, top + 60, "5 毛 5", "bahn", 120, C.amber, opacity=a)
     return c.finish()
 ```
 
+常用公共件（全部签名见 `references/api-reference.md`）：
+
+| 从哪里 | 有什么 |
+|---|---|
+| `scene_kit.py` | `canvas / scene_head / chapter / headline / label / number / rule / bar / vbar / arrow / pill / card / cross / check / strike / shake / dim / scrim_top` + 文案表 `TEXT` |
+| `motion.py` | `Canvas`（`text / text_mixed / rect / rounded_rect / line / ellipse / polygon / glow / vignette / paste / _comp / finish`）、`stage / ease_* / spring / clamp / lerp / C`、`text_tracking()` |
+
 **先列台词表再挂元素**（铁律 5）。每写完一场立刻：
-```bash
-python check_layout.py scenes/sNN_xxx.py --step 0.5
-python audit_band.py sNN
-python audit_text_band.py sNN        # 第六道：文字有没有出界（标题层最容易顶出去）
-```
 
-### 阶段 6 · 渲染 + 合成
-```bash
-python 03-动画/build_clips.py --force --jobs 4 --crf 17        # 16 场约 6 分钟
-python 03-动画/compose_final.py --out "02-剪辑/04-合成.mp4"    # 264 秒约 14 分钟
-ffmpeg -i 02-剪辑/04-合成.mp4 -af "volume=7.2dB,alimiter=limit=0.841:attack=4:release=55:level=false" \
-  -c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart 02-剪辑/05-成片.mp4
-```
-
-响度标准 **-14 LUFS / TP ≤ -1.0 dBTP**。`volume` 必须在 `alimiter` 之前，顺序不能换。
-
-### 阶段 7 · 六道验收（一道都不能省）
 ```bash
 cd 03-动画
-python check_layout.py @files --step 0.5   # ①越界 / 压圆 / 进字幕带
-python check_text.py  @files --fps 10      # ②文字重叠
-python audit_band.py                       # ③文字进字幕带
-python audit_canvas.py                     # ④画布利用率（宽 ≥85%、下沿 ≥1200）
-python audit_timing.py                     # ⑤节拍 vs 台词
-python audit_text_band.py                  # ⑥文字出界（标题层最容易顶出去）
+python check_layout.py s07 --step 0.5      # ①越界/压圆/进字幕带
+python check_text.py s07 --fps 10          # ②文字重叠
+python audit_band.py s07                   # ③文字进字幕带
+python audit_canvas.py s07                 # ④宽度/下沿
+python audit_text_band.py s07              # ⑥文字整体出界
 ```
 
-| 检查 | 判据 | 不通过的典型症状 |
+⑤ 留到整条时间轴齐了再跑（它要把 `cues.json` 和场次表对起来）。
+
+### 阶段 6 · 渲染 + 合成
+
+```bash
+cd 03-动画
+python build_clips.py --force --jobs 4 --crf 17        # 16 场约 6~10 分钟
+python compose_final.py --out "../02-剪辑/04-合成.mp4"  # 264 秒约 14 分钟
+
+# 响度：目标 -14 LUFS / TP ≤ -1.0 dBTP
+ffmpeg -hide_banner -y -i "../02-剪辑/04-合成.mp4" \
+  -af "loudnorm=I=-14:TP=-1.0:LRA=11" \
+  -c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart "../02-剪辑/05-成片.mp4"
+```
+
+**不要写死增益**（`volume=7.2dB` 只是某条 −19.2 LUFS 素材的差值，换素材会偏离甚至削波）。
+要么用上面那行 `loudnorm` 一把过，要么先量再补：
+
+```bash
+ffmpeg -hide_banner -i "../02-剪辑/04-合成.mp4" -af ebur128 -f null -   # 看 I / Peak
+```
+
+要求更准时用两遍法（先测再套实测值，`measured_*` 从第一遍的 JSON 里抄）。
+
+**素材峰值高时（源 TP > −3 dB）上面两条都会翻车，用「增益 + 限幅」这一版**：
+
+```bash
+# 源素材 −18.8 LUFS / TP −3.0：线性 +4.8 dB 会把 TP 顶到 +1.8（削波），
+# 而 loudnorm 动态模式在这类口播上稳定欠 0.5–0.7 dB（实测 −14.6 ~ −14.9）
+ffmpeg -hide_banner -y -i "../02-剪辑/04-合成.mp4" \
+  -af "volume=6.75dB,alimiter=limit=0.80:attack=4:release=80:level=false" \
+  -c:v copy -c:a aac -b:a 192k -ar 48000 -movflags +faststart "../02-剪辑/05-成片.mp4"
+```
+
+`alimiter` 的 `level=false` 不能省——默认 `level=true` 会自己把输出电平抬回去，实测直接顶到 +0.24 dBTP。
+`limit=0.80`（−1.94 dBFS 采样峰值）是给 AAC 编码后的真峰值留余量：设 0.891 时成片 TPK 仍是 −0.83。
+收尾一律复测：
+
+```bash
+ffmpeg -hide_banner -i "05-成片.mp4" -af "loudnorm=I=-14:TP=-1.0:print_format=json" -f null -
+```
+
+### 阶段 7 · 六道验收（一道都不能省）
+
+```bash
+cd 03-动画
+python check_layout.py s01 s02 --step 0.5   # ①越界 / 压圆 / 进字幕带
+python check_text.py --fps 10               # ②文字重叠
+python audit_band.py                        # ③文字进字幕带（逐字精确）
+python audit_canvas.py                      # ④画布利用率（宽 ≥80%、下沿 ≥1150）
+python audit_timing.py                      # ⑤节拍 vs 台词
+python audit_text_band.py                   # ⑥文字整体出界
+```
+
+| 检查 | 判据（以脚本为准） | 不通过的典型症状 |
 |---|---|---|
-| ① | 圆侵入 0px、字幕带 0px | 内容压头像、字被字幕盖 |
-| ② | 无重叠 | 两行字叠一起 |
-| ③ | 字幕带内无文字 | 标题排到 y1300 以下 |
-| ④ | 宽 ≥85%、下沿 ≥1200 | 只用半边画布、下半屏空 |
-| ⑤ | 事件贴台词、无 >1.2s 死区 | 画面自己走、结尾静止 |
-| ⑥ | 所有文字框在 y 140–1290 / x 60–1020 内 | 副标顶出右边界、标题压进字幕带 |
+| ① `check_layout` | 圆侵入 0px、字幕带 <300px、安全区外仅允许飞出镜头 | 内容压头像、字被字幕盖 |
+| ② `check_text` | 重叠面积 < 小字框 35%，或 <900px² | 两行字叠一起 |
+| ③ `audit_band` | 字幕带（y 1300–1460）内无**文字** | 标题排到 y1300 以下 |
+| ④ `audit_canvas` | 宽 ≥80%（对 936）、下沿 ≥1150 | 只用半边画布、下半屏空 |
+| ⑤ `audit_timing` | 事件贴台词、无 >1.2s 死区 | 画面自己走、结尾静止 |
+| ⑥ `audit_text_band` | 文字框全在 x 72–1008 / y 140–1290 | 副标顶出右边界、标题压进字幕带 |
+
+三道边界检查的分工，别搞混：
+
+- ① 查**像素**（含图形、色块、卡片）对圆头像/字幕带/安全区；
+- ③ 只查**文字**对字幕带，逐场报压带像素数，定位最快；
+- ⑥ 查**文字**对四条边（上沿 140、下沿 1290、左右 72–1008）。③ 是 ⑥ 的子集，
+  保留两道是因为 ③ 的报错更可读、⑥ 会连标题层顶边一起抓。
 
 **⑤ 最容易漏，也最影响观感。** 前四道全绿但片子「不对劲」，八成是 ⑤。
-**⑥ 是 2026-11 新加的**：它查的是 ①②③ 都不管的一件事——字本身的位置对不对。
+`--thresh` 的单位是**变化像素个数**（不是帧、不是秒）：默认 900 看大动作，
+`--thresh 60` 连轻动作和死区一起看。
+
+两个会直接报错退出的坑（不是判据问题，是接线问题）：
+
+- `audit_timing.py` 读 **`02-剪辑/cues.json`**，不是 `文案/cues.json`。没复制就
+  `FileNotFoundError`，看起来像脚本坏了。
+- `audit_text_band.py` 依赖 `motion.text_tracking()`。工作区里若用着旧版
+  `管线/scripts/motion.py`（没有这个上下文管理器），会报
+  `AttributeError: module 'motion' has no attribute 'text_tracking'`——把 skill 里的
+  `assets/pipeline/scripts/motion.py` 覆盖过去即可（旧版备份成 `motion.py.bak_<集名>`）。
 
 ---
 
@@ -242,11 +396,13 @@ python audit_text_band.py                  # ⑥文字出界（标题层最容�
 
 | 文件 | 什么时候读 |
 |---|---|
-| `references/cases-2026-11.md` | **开工前读**。EP.03/EP.04 两条真实成片：用户改了什么、为什么、实测参数 |
+| `references/cases-2026-11.md` | **开工前读**。两条真实成片：用户改了什么、为什么、实测参数 |
 | `references/pipeline.md` | 要完整命令、参数、目录约定时 |
-| `references/layout-rules.md` | 定版式、写场景、调节拍时（填充原则、节拍纪律） |
+| `references/schemas.md` | 写/读 `cuts.json` `segments.json` `timemap.json` `cues.json` 时（字段是硬契约） |
+| `references/api-reference.md` | 写场景时查函数签名（`layout` / `motion` / `scene_kit`） |
+| `references/layout-rules.md` | 定版式、写场景、调节拍时（填充原则、节拍纪律、头部标定） |
 | `references/modes.md` | **定模式时读**。四种版式的选型判据、拍摄自检、各模式参数 |
-| `references/pitfalls.md` | **开工前读一遍**。30 条真实踩过的坑，能省一整天 |
+| `references/pitfalls.md` | **开工前读一遍**。真实踩过的坑，能省一整天 |
 
 ---
 
@@ -254,12 +410,13 @@ python audit_text_band.py                  # ⑥文字出界（标题层最容�
 
 | 文件 | 说明 |
 |---|---|
-| `05-成片.mp4` | 成片，1080×1920 / 30fps / -14 LUFS |
+| `02-剪辑/05-成片.mp4` | 成片，1080×1920 / 30fps / −14 LUFS |
+| `06-带片尾.mp4` | 挂了片尾组件的版本（可选，只在用户要片尾时出） |
 | `final.srt` | 字幕时间轴，**绝不烧进画面** |
 | `QA.md` | 验收记录：时长、响度、六道检查结果 |
-| `EDL.md` | 剪辑决策记录 |
+| `EDL.md` | 剪辑决策记录（cuts.json 的人读版） |
 | `预览/*.png` | 构图验收图、分镜联系表、标题层一览 |
-| 标题表 | 场景生成脚本里的 `TEXT` 字典（一行一场），改字只改这里 |
+| 标题表 | 场景目录里的 `TEXT` 字典（一行一场），改字只改这里 |
 
 ---
 
@@ -274,9 +431,15 @@ python 管线/组件/outro_terminal.py --attach "02-剪辑/05-成片.mp4" --out 
 
 ---
 
-## 已知失效项
+## 已知失效项 / 平台限制
 
+- **仅 Windows**：字体取系统目录（`%WINDIR%\Fonts`）。非 Windows 要设 `KOUBO_FONT_DIR`
+  指向放了 `msyh.ttc` / `msyhbd.ttc` / `bahnschrift.ttf` / `consola*.ttf` 的目录。
+  缺字体会**明确报错**并列出找过的路径（不会静默出方块字）。
+- **仅竖屏 1080×1920**：`portrait/corner` 是唯一 `status=ready` 的版式；
+  `portrait/cut` 只有几何、没有状态机；横屏两组参数还是空的（`activate()` 会直接抛
+  `NotImplementedError`，不会静默出错）。
 - `measure_head.py`（OpenCV 5 读不了 YuNet，且 cv2 在中文路径下打不开文件）——
-  头部标定用手动网格法，见 `references/layout-rules.md`
-- 所有脚本面向 Windows（字体取 `%WINDIR%\Fonts`）。换 macOS/Linux 要改
-  `motion.py` 的 `FONT_DIR` 和字体文件名。
+  头部标定用手动网格法，见 `references/layout-rules.md`。
+- `vision.py` 需要环境变量 `VISION_API_KEY`（或 `OPENAI_API_KEY`），可选
+  `VISION_BASE_URL` / `VISION_MODEL`；没设直接报错退出。

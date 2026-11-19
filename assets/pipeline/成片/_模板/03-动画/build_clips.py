@@ -9,7 +9,7 @@
 用法:
     python build_clips.py                # 只渲缺的
     python build_clips.py --force        # 全部重渲
-    python build_clips.py S07 S08        # 只渲指定编号
+    python build_clips.py S07 s08        # 只渲指定编号（大小写不敏感，也可写文件名主干）
     python build_clips.py --jobs 6       # 并发数
 """
 from __future__ import annotations
@@ -22,12 +22,14 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE))
+import _paths
 
-import layout as L
+_paths.ensure_import_path()
 
-RENDER = HERE.parents[2] / "scripts" / "render_scene.py"
+import layout as L  # noqa: E402
+
+HERE = _paths.HERE
+RENDER = _paths.scripts_dir() / "render_scene.py"
 FPS = 30
 
 
@@ -89,7 +91,11 @@ def main() -> int:
 
     clips = HERE / "scenes" / "clips"
     clips.mkdir(parents=True, exist_ok=True)
-    todo = [s for s in L.SCENE_SLOTS if not args.only or s[0] in args.only]
+    (HERE / "preview").mkdir(parents=True, exist_ok=True)   # 分块临时目录建在这里
+    todo = [s for s in L.SCENE_SLOTS if not args.only or _paths.matches(s[1], args.only)]
+    if args.only and not todo:
+        print(f"[!] 没有场次匹配 {args.only}（编号 S07 / 文件名主干 s07_xxx 都行）")
+        return 2
 
     t_all = time.time()
     for sid, name, a, b, dur in todo:

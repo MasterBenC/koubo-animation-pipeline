@@ -12,7 +12,12 @@
 | **竖屏 9:16** | `portrait/corner` ✅ 已验证 | `portrait/cut` 几何已定，状态机待实现 |
 | **横屏 16:9** | `landscape/corner` 等模板 | `landscape/cut` 等模板 |
 
-配置在 `layout.py` 的 `PROFILES` 里，切换：
+配置在 `layout.py` 的 `PROFILES` 里。**唯一合法入口是 `activate()`**：
+
+- 改参数：只改 `PROFILES["你的模式"]` 那一块；
+- 切模式：环境变量 `LAYOUT_PROFILE`，或代码里 `L.activate(...)`；
+- **不要**给模块级 `SAFE` / `CONTENT` / `PIP_CX` 直接赋值——它们是 `activate()`
+  算出来的派生量，手改会在下一次 activate 时被覆盖（旧文档里那种写法已删）。
 
 ```bash
 set LAYOUT_PROFILE=portrait/cut          # Windows
@@ -86,6 +91,7 @@ L.activate("portrait/cut")
 |---|---|
 | 画布 | 1080×1920 |
 | 内容区 | x 72–1008，y 400–1290（936×890） |
+| 标题层 | y 254–360（`TITLE_BAND`） |
 | 字幕带 | y 1300–1460 |
 | 圆头像 | 直径 280，圆心 (840,1555)，右距 100，下距 345 |
 | 头部裁剪 | 520×520 @ (570,838) |
@@ -100,6 +106,7 @@ L.activate("portrait/cut")
 |---|---|
 | 画布 | 1080×1920 |
 | 内容区 | x 72–1008，**y 220–1290**（936×1070，比 corner 高 180px） |
+| 标题层 | y 140–212（`TITLE_BAND`，没有圆头像所以能更靠上） |
 | 字幕带 | y 1300–1460（不变） |
 | 人物 | 全屏原样，不裁不缩 |
 
